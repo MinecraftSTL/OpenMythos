@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-OpenMythos pretraining on FineWeb-Edu with FSDP + AdamW.
+OpenMythos 在 FineWeb-Edu 上使用 FSDP + AdamW 进行预训练。
 
-Single GPU:
+单 GPU:
     python training/3b_fine_web_edu.py
 
-Multi-GPU:
+多 GPU:
     torchrun --nproc_per_node=$(python -c "import torch; print(torch.cuda.device_count())") training/3b_fine_web_edu.py
 """
 
@@ -36,34 +36,32 @@ from open_mythos.tokenizer import MythosTokenizer
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# 数据集
 # ---------------------------------------------------------------------------
 
 
 class FineWebEduDataset(IterableDataset):
     """
-    Streaming FineWeb-Edu loader yielding fixed-length (input, target) pairs.
+    流式 FineWeb-Edu 加载器，生成固定长度的 (输入, 目标) 对。
 
-    FineWeb-Edu is trillions of tokens, so `streaming=True` pulls shards on
-    demand instead of materializing to disk. Sharding is two-dimensional —
-    `world_size` ranks × `num_workers` DataLoader workers per rank — and each
-    `(rank, worker_id)` deterministically owns one shard of the global stream.
-    That gives disjoint coverage without any cross-process coordination.
+    FineWeb-Edu 拥有数万亿 token，因此 `streaming=True` 按需拉取分片，
+    而非全部写入磁盘。分片是二维的 — `world_size` 个进程 × 每个进程
+    `num_workers` 个 DataLoader 工作线程 — 每个 `(rank, worker_id)` 确定性地
+    拥有全局流的一个分片。这在无需跨进程协调的情况下实现了不重叠的覆盖。
 
-    Streaming datasets are not seekable, so a resumed run re-enters its shard
-    from the beginning. Acceptable at pretraining scale: the chance of
-    re-playing the same tokens before the run ends is negligible versus the
-    cost of a true resumable loader.
+    流式数据集不可定位，因此恢复训练时会从分片开头重新进入。在预训练规模下
+    这是可接受的：在训练结束前重放相同 token 的概率相对于真正可恢复加载器的
+    成本来说可以忽略不计。
     """
 
     def __init__(self, encoding, seq_len: int, subset: str, rank: int, world_size: int):
         """
-        Args:
-            encoding   -- tokenizer exposing `.encode(str) -> list[int]`
-            seq_len    -- context length; every yielded pair has this many tokens
-            subset     -- FineWeb-Edu config name (e.g. "sample-10BT", "default")
-            rank       -- global rank of this process within the distributed job
-            world_size -- total number of distributed processes
+        参数:
+            encoding   -- 分词器，暴露 `.encode(str) -> list[int]` 接口
+            seq_len    -- 上下文长度；每个生成的对都包含这么多 token
+            subset     -- FineWeb-Edu 配置名称（例如 "sample-10BT"、"default"）
+            rank       -- 当前进程在分布式任务中的全局排名
+            world_size -- 分布式进程总数
         """
         self.encoding = encoding
         self.seq_len = seq_len
@@ -73,14 +71,13 @@ class FineWebEduDataset(IterableDataset):
 
     def __iter__(self):
         """
-        Yield `(input_ids, target_ids)` tensors of length `seq_len` forever.
+        无限生成长度为 `seq_len` 的 `(input_ids, target_ids)` 张量。
 
-        Inputs and targets are shifted by one for next-token prediction —
-        `target[i] == input[i + 1]`. Documents are concatenated into a rolling
-        buffer and sliced into fixed-length chunks, packing short docs together
-        and splitting long ones. This keeps every step at the same shape,
-        which under FSDP avoids recompute from variable-length inputs and
-        removes the need for a pad-aware attention mask.
+        输入和目标偏移一位用于下一个 token 预测 —
+        `target[i] == input[i + 1]`。文档被拼接到滚动缓冲区中，
+        并切分为固定长度的块，将短文档打包在一起，长文档则被拆分。
+        这使得每一步的形状保持一致，在 FSDP 下避免了因可变长度输入
+        导致的重新计算，并消除了对填充感知注意力掩码的需求。
         """
         worker = get_worker_info()
         num_workers = worker.num_workers if worker else 1
@@ -109,36 +106,33 @@ class FineWebEduDataset(IterableDataset):
 
 
 # ---------------------------------------------------------------------------
-# LR schedule: linear warmup → cosine decay
+# 学习率调度: 线性预热 → 余弦衰减
 # ---------------------------------------------------------------------------
 
 
 def get_lr(step: int, warmup: int, total: int, max_lr: float, min_lr: float) -> float:
     """
-    Linear warmup → half-cosine decay to `min_lr`.
+    线性预热 → 半余弦衰减至 `min_lr`。
 
-    Standard language-model pretraining schedule. The warmup phase prevents
-    Adam's second-moment estimate from collapsing to a huge LR in the first
-    few steps when gradients are noisy. The cosine tail lets the model make
-    small, increasingly conservative updates near the end of training rather
-    than crashing to `min_lr` at a fixed step.
+    标准语言模型预训练调度。预热阶段防止 Adam 的二阶矩估计在前几步
+    梯度噪声较大时崩溃为过大的学习率。余弦尾部让模型在训练末期进行
+    越来越保守的小幅更新，而不是在固定步数突然降至 `min_lr`。
 
-    Behavior by region:
-        step < warmup                 → linear ramp 0 → max_lr
-        warmup ≤ step < total         → cosine decay max_lr → min_lr
-        step ≥ total                  → clamped at min_lr (safety for
-                                        off-by-one step counters at the end
-                                        of training)
+    各区间行为:
+        step < warmup                 → 线性上升 0 → max_lr
+        warmup ≤ step < total         → 余弦衰减 max_lr → min_lr
+        step ≥ total                  → 钳制在 min_lr（防止训练末尾
+                                        的差一错误）
 
-    Args:
-        step    -- current global optimizer step (0-indexed)
-        warmup  -- number of warmup steps before cosine decay begins
-        total   -- step at which the cosine reaches `min_lr`
-        max_lr  -- peak learning rate reached at the end of warmup
-        min_lr  -- floor learning rate at and after `total` steps
+    参数:
+        step    -- 当前全局优化器步数（从 0 开始）
+        warmup  -- 余弦衰减开始前的预热步数
+        total   -- 余弦达到 `min_lr` 的步数
+        max_lr  -- 预热结束时达到的峰值学习率
+        min_lr  -- 在 `total` 步及之后的最低学习率
 
-    Returns:
-        Scalar learning rate for this step.
+    返回:
+        当前步的标量学习率。
     """
     if step < warmup:
         return max_lr * step / warmup
@@ -149,25 +143,24 @@ def get_lr(step: int, warmup: int, total: int, max_lr: float, min_lr: float) -> 
 
 
 # ---------------------------------------------------------------------------
-# Checkpointing
+# 检查点
 # ---------------------------------------------------------------------------
 
 
 def _list_ckpts(ckpt_dir: str) -> list[str]:
     """
-    Return checkpoint paths in `ckpt_dir` sorted oldest → newest.
+    返回 `ckpt_dir` 中按从旧到新排序的检查点路径。
 
-    Relies on the zero-padded `step_{0000000}.pt` filename convention so
-    lexicographic sort matches chronological order. Changing the filename
-    format elsewhere without updating the pad width would silently break
-    both `keep_last` pruning and resume-latest on startup, since both pick
-    the last element of this list.
+    依赖零填充的 `step_{0000000}.pt` 文件名约定，使得字典序排序
+    与时间顺序一致。如果在其他地方更改文件名格式而不更新填充宽度，
+    会静默破坏 `keep_last` 裁剪和启动时的恢复最新检查点功能，
+    因为两者都选取此列表的最后一个元素。
 
-    Args:
-        ckpt_dir -- directory to scan; missing directory returns []
+    参数:
+        ckpt_dir -- 要扫描的目录；目录不存在时返回 []
 
-    Returns:
-        Sorted list of absolute paths to matching checkpoint files.
+    返回:
+        匹配的检查点文件绝对路径的排序列表。
     """
     if not os.path.isdir(ckpt_dir):
         return []
@@ -190,32 +183,29 @@ def save_checkpoint(
     keep_last: int = 3,
 ) -> None:
     """
-    Gather full model + optimizer state, write atomically, prune old files.
+    收集完整的模型 + 优化器状态，原子写入，裁剪旧文件。
 
-    Under FSDP both states are collected inside a single FULL_STATE_DICT
-    context so the optim-state tensors bind to fully-unsharded parameters;
-    mixing contexts between model and optimizer has caused silent divergence
-    on resume in past torch versions. The temp-file + os.replace write means
-    a kill mid-save leaves the previous checkpoint intact instead of a
-    truncated .pt file. Non-master ranks participate in the FSDP gather
-    (otherwise the collective would hang) but exit before touching disk.
+    在 FSDP 下，模型和优化器状态都在单个 FULL_STATE_DICT 上下文中收集，
+    使得优化器状态张量绑定到完全未分片的参数上；在过去的 torch 版本中，
+    混合上下文曾导致恢复时的静默发散。临时文件 + os.replace 写入意味着
+    保存过程中被终止时，前一个检查点保持完整，而不会留下截断的 .pt 文件。
+    非主进程参与 FSDP 收集（否则集合操作会挂起），但在接触磁盘前退出。
 
-    Args:
-        model       -- FSDP-wrapped (ddp=True) or raw (ddp=False) model
-        optimizer   -- the optimizer whose state should round-trip with the model
-        step        -- global step number; encoded zero-padded into the filename
-        cfg         -- model config object; saved so downstream eval can
-                       reconstruct the model without re-importing the variant
-        vocab_size  -- tokenizer vocab size at train time; saved for sanity-check
-                       on load against a (possibly updated) tokenizer
-        ckpt_dir    -- directory to write into; created if missing
-        ddp         -- True if FSDP path; False for single-GPU / CPU
-        master      -- whether this rank writes to disk (rank 0 only)
-        keep_last   -- number of most-recent checkpoints to retain; older ones
-                       are unlinked after a successful write
+    参数:
+        model       -- FSDP 封装（ddp=True）或原始（ddp=False）模型
+        optimizer   -- 需要与模型一起往返保存的优化器
+        step        -- 全局步数；零填充编码到文件名中
+        cfg         -- 模型配置对象；保存后下游评估可以在不重新导入变体的情况下
+                       重建模型
+        vocab_size  -- 训练时的分词器词汇表大小；保存用于加载时与（可能已更新的）
+                       分词器进行一致性检查
+        ckpt_dir    -- 写入目录；不存在时自动创建
+        ddp         -- True 表示 FSDP 路径；False 表示单 GPU / CPU
+        master      -- 当前进程是否写入磁盘（仅 rank 0）
+        keep_last   -- 保留的最近检查点数量；成功写入后删除更旧的检查点
 
-    Returns:
-        None. Writes to disk as a side effect on master rank.
+    返回:
+        None。在主进程上作为副作用写入磁盘。
     """
     if ddp:
         with FSDP.state_dict_type(
@@ -251,35 +241,31 @@ def save_checkpoint(
         try:
             os.remove(old)
         except OSError as exc:
-            logger.warning(f"Failed to prune old checkpoint {old}: {exc}")
+            logger.warning(f"裁剪旧检查点失败 {old}: {exc}")
 
-    logger.success(f"Checkpoint saved → {final_path}")
+    logger.success(f"检查点已保存 → {final_path}")
 
 
 def load_checkpoint(model, optimizer, path: str, ddp: bool) -> int:
     """
-    Restore model + optimizer from disk, returning the step to resume at.
+    从磁盘恢复模型 + 优化器，返回要恢复的步数。
 
-    Every rank reads the file (`rank0_only=False` on load) so FSDP has access
-    to the full state on each rank — the complement to the `rank0_only=True`
-    save path. Must mirror save's single-context pattern; splitting the model
-    and optimizer loads across two `state_dict_type` blocks has historically
-    produced optimizer state bound to the wrong shard shapes.
+    每个进程都读取文件（加载时 `rank0_only=False`），使得 FSDP 在每个进程上
+    都能访问完整状态 — 这是保存路径中 `rank0_only=True` 的补充。必须与保存时
+    的单上下文模式一致；将模型和优化器的加载拆分到两个 `state_dict_type` 块中
+    在历史上曾产生绑定到错误分片形状的优化器状态。
 
-    `weights_only=False` is required because the checkpoint contains the
-    pickled `cfg` dataclass — flip to `weights_only=True` only if you
-    separate config out.
+    `weights_only=False` 是必需的，因为检查点包含序列化的 `cfg` 数据类 —
+    只有在将配置分离出来后才能切换为 `weights_only=True`。
 
-    Args:
-        model     -- same FSDP-wrapped or raw model used during save
-        optimizer -- freshly constructed optimizer to be filled in-place
-        path      -- absolute path to a `step_{N:07d}.pt` file produced by
-                     `save_checkpoint`
-        ddp       -- whether the model is FSDP-wrapped; must match the save run
+    参数:
+        model     -- 与保存时相同的 FSDP 封装或原始模型
+        optimizer -- 新构建的优化器，将被就地填充
+        path      -- 由 `save_checkpoint` 生成的 `step_{N:07d}.pt` 文件的绝对路径
+        ddp       -- 模型是否经过 FSDP 封装；必须与保存时的运行一致
 
-    Returns:
-        The step number the checkpoint was taken at; the caller advances the
-        training loop from this value.
+    返回:
+        检查点保存时的步数；调用方从此值继续训练循环。
     """
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
 
@@ -304,40 +290,37 @@ def load_checkpoint(model, optimizer, path: str, ddp: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 主函数
 # ---------------------------------------------------------------------------
 
 
 def main():
     """
-    End-to-end pretraining entry point.
+    端到端预训练入口点。
 
-    Order matters: distributed init must run before any CUDA allocation, the
-    tokenizer must exist before the model is built (vocab_size flows into
-    cfg), and FSDP must wrap the model before the optimizer is constructed
-    (FSDP re-flattens parameters, so an optimizer built on the unwrapped
-    model would track stale param objects). Resume then loads state into the
-    already-constructed optimizer in-place.
+    顺序很重要：分布式初始化必须在任何 CUDA 分配之前运行，分词器必须在模型
+    构建之前存在（vocab_size 流入 cfg），FSDP 必须在优化器构建之前封装模型
+    （FSDP 会重新展平参数，因此在未封装模型上构建的优化器会跟踪过时的参数对象）。
+    然后恢复操作将状态就地加载到已构建的优化器中。
 
-    Lifecycle:
-        1. Initialize torch.distributed (NCCL) if launched under torchrun.
-        2. Build tokenizer → derive vocab_size.
-        3. Construct OpenMythos with the 3B variant config.
-        4. Wrap in FSDP with FULL_SHARD + bf16/fp16 mixed precision (multi-GPU)
-           or move to device + autocast (single-GPU).
-        5. Build fused AdamW on (possibly sharded) parameters.
-        6. Resume from the latest checkpoint in `ckpt_dir` if one exists.
-        7. Stream FineWeb-Edu through grad-accumulation microbatches with
-           cosine LR schedule, per-step logging, and periodic checkpoints.
-        8. Write a final checkpoint if the last save wasn't aligned to
-           `ckpt_every`, then barrier + tear down the process group.
+    生命周期:
+        1. 如果在 torchrun 下启动，初始化 torch.distributed (NCCL)。
+        2. 构建分词器 → 推导 vocab_size。
+        3. 使用 3B 变体配置构建 OpenMythos。
+        4. 使用 FULL_SHARD + bf16/fp16 混合精度封装 FSDP（多 GPU），
+           或移至设备 + autocast（单 GPU）。
+        5. 在（可能已分片的）参数上构建融合 AdamW。
+        6. 如果 `ckpt_dir` 中存在检查点，从最新的检查点恢复。
+        7. 通过梯度累积微批次流式处理 FineWeb-Edu，使用余弦学习率调度、
+           逐步日志记录和定期检查点。
+        8. 如果最后一次保存未对齐到 `ckpt_every`，则写入最终检查点，
+           然后 barrier + 销毁进程组。
 
-    All hyperparameters are literal constants in this function by design —
-    pretraining runs are long-lived and each run pins exact settings; a
-    CLI/config layer is deliberately avoided to keep the file self-auditable.
+    所有超参数都是此函数中的字面常量 — 预训练运行是长期的，每次运行
+    固定确切的设置；故意避免 CLI/配置层以保持文件的自审计性。
     """
     # ------------------------------------------------------------------
-    # Distributed init
+    # 分布式初始化
     # ------------------------------------------------------------------
     ddp = int(os.environ.get("RANK", -1)) != -1
     if ddp:
@@ -356,20 +339,20 @@ def main():
 
     if master:
         logger.info(
-            f"GPUs: {torch.cuda.device_count()}  |  World size: {world_size}  |  Device: {device}"
+            f"GPU 数量: {torch.cuda.device_count()}  |  世界大小: {world_size}  |  设备: {device}"
         )
 
     # ------------------------------------------------------------------
-    # Tokenizer
+    # 分词器
     # ------------------------------------------------------------------
     encoding = MythosTokenizer()
     vocab_size = encoding.vocab_size
 
     if master:
-        logger.info(f"Tokenizer: gpt-oss-20b  |  Vocab size: {vocab_size:,}")
+        logger.info(f"分词器: gpt-oss-20b  |  词汇表大小: {vocab_size:,}")
 
     # ------------------------------------------------------------------
-    # Hyperparameters
+    # 超参数
     # ------------------------------------------------------------------
     seq_len = 2048
     micro_batch = 4
@@ -383,16 +366,16 @@ def main():
     log_every = 10
     ckpt_every = 1000
     ckpt_dir = "checkpoints"
-    dataset_subset = "sample-10BT"  # → sample-100BT or "default" for full run
+    dataset_subset = "sample-10BT"  # → sample-100BT 或 "default" 用于完整运行
 
     if master:
         logger.info(
             f"seq_len={seq_len} | micro_batch={micro_batch} | grad_accum={grad_accum} | "
-            f"global_batch_tokens={global_batch_tok:,} | total_steps={total_steps:,}"
+            f"全局批次 token 数={global_batch_tok:,} | 总步数={total_steps:,}"
         )
 
     # ------------------------------------------------------------------
-    # Model
+    # 模型
     # ------------------------------------------------------------------
     cfg = mythos_3b()
     cfg.vocab_size = vocab_size
@@ -425,44 +408,43 @@ def main():
             else nullcontext()
         )
 
-    # FSDP handles its own mixed precision; only need autocast for single-GPU
+    # FSDP 自行处理混合精度；仅单 GPU 需要 autocast
     amp_ctx = nullcontext() if ddp else amp_ctx  # type: ignore[possibly-undefined]
 
     if master:
         n_params = sum(p.numel() for p in model.parameters())
-        logger.info(f"Parameters: {n_params:,}  |  AMP dtype: {amp_dtype}")
+        logger.info(f"参数量: {n_params:,}  |  AMP 数据类型: {amp_dtype}")
 
     # ------------------------------------------------------------------
-    # Optimizer
+    # 优化器
     # ------------------------------------------------------------------
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=wd, betas=(0.9, 0.95), fused=True
     )
 
     # ------------------------------------------------------------------
-    # Resume from latest checkpoint (if any)
+    # 从最新检查点恢复（如果存在）
     # ------------------------------------------------------------------
-    # Streaming datasets are not resumable by position, so re-iterating from
-    # the beginning is accepted — at pretraining scale the loss of dataset
-    # position is negligible vs. the cost of discarded training steps.
+    # 流式数据集不支持按位置恢复，因此接受从头重新迭代 — 在预训练规模下，
+    # 丢失数据集位置相对于丢弃训练步数的成本可以忽略不计。
     start_step = 0
     existing_ckpts = _list_ckpts(ckpt_dir)
     if existing_ckpts:
         latest = existing_ckpts[-1]
         if master:
-            logger.info(f"Resuming from checkpoint: {latest}")
+            logger.info(f"从检查点恢复: {latest}")
         start_step = load_checkpoint(model, optimizer, latest, ddp)
         if master:
-            logger.success(f"Resumed at step {start_step}")
+            logger.success(f"已恢复至步数 {start_step}")
 
     # ------------------------------------------------------------------
-    # Dataset + DataLoader
+    # 数据集 + 数据加载器
     # ------------------------------------------------------------------
     dataset = FineWebEduDataset(encoding, seq_len, dataset_subset, rank, world_size)
     loader = DataLoader(dataset, batch_size=micro_batch, num_workers=4, pin_memory=True)
 
     # ------------------------------------------------------------------
-    # Training loop
+    # 训练循环
     # ------------------------------------------------------------------
     if master:
         os.makedirs(ckpt_dir, exist_ok=True)
@@ -505,9 +487,9 @@ def main():
             loss.backward()
             loss_accum += loss.item()
 
-        # FSDP shards parameters, so `nn.utils.clip_grad_norm_` would clip
-        # against each rank's local norm and miss the cross-shard gather.
-        # FSDP.clip_grad_norm_ computes the true global norm and returns it.
+        # FSDP 对参数进行分片，因此 `nn.utils.clip_grad_norm_` 会针对每个进程的
+        # 本地范数进行裁剪，而遗漏跨分片的收集。
+        # FSDP.clip_grad_norm_ 计算真正的全局范数并返回。
         if ddp:
             grad_norm = model.clip_grad_norm_(1.0)
         else:
@@ -520,10 +502,10 @@ def main():
             tok_per_sec = global_batch_tok * log_every / dt
             tokens_seen = step * global_batch_tok
             logger.info(
-                f"step {step:6d}/{total_steps} | loss {loss_accum:.4f} "
-                f"| gnorm {float(grad_norm):.2f} | lr {cur_lr:.2e} "
+                f"步数 {step:6d}/{total_steps} | 损失 {loss_accum:.4f} "
+                f"| 梯度范数 {float(grad_norm):.2f} | 学习率 {cur_lr:.2e} "
                 f"| {tok_per_sec / 1e6:.2f}M tok/s "
-                f"| {tokens_seen / 1e9:.1f}B tokens seen"
+                f"| 已处理 {tokens_seen / 1e9:.1f}B token"
             )
             t0 = time.perf_counter()
 
@@ -532,19 +514,19 @@ def main():
                 model, optimizer, step, cfg, vocab_size, ckpt_dir, ddp, master
             )
 
-    # Final checkpoint — total_steps may not be divisible by ckpt_every, so
-    # without this the tail of the run is lost if the schedule doesn't align.
+    # 最终检查点 — total_steps 可能不能被 ckpt_every 整除，
+    # 因此如果调度未对齐，没有这一步训练尾部就会丢失。
     if step > start_step and step % ckpt_every != 0:
         save_checkpoint(model, optimizer, step, cfg, vocab_size, ckpt_dir, ddp, master)
 
     if ddp:
-        # Barrier so no rank exits while another is still finishing its
-        # checkpoint gather — avoids NCCL "process group destroyed" noise.
+        # 屏障确保没有进程在另一个进程仍在完成检查点收集时退出 —
+        # 避免 NCCL "进程组已销毁" 的噪声。
         dist.barrier()
         dist.destroy_process_group()
 
     if master:
-        logger.success("Training complete.")
+        logger.success("训练完成。")
 
 
 if __name__ == "__main__":

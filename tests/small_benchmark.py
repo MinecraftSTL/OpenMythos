@@ -1,42 +1,39 @@
 #!/usr/bin/env python3
 """
-Side-by-side training + benchmark of OpenMythos vs. a vanilla transformer on a
-small HuggingFace dataset (TinyStories by default, streamed).
+OpenMythos 与原版 Transformer 在小型 HuggingFace 数据集上的
+并行训练 + 基准测试（默认使用 TinyStories，流式加载）。
 
-Both models share the same tiny MLA config and see the exact same batches in
-the same order, so per-step train loss and throughput are directly comparable.
-The baseline is a dense stack of the same TransformerBlock primitive with
-`use_moe=False`; its unique-layer depth matches the recurrent block's
-unique-parameter depth (prelude + 1 + coda), so total parameter counts land in
-the same ballpark. Attention kernel is shared (MLA in both models), so any
-measured delta reflects the looped recurrent-depth architecture rather than
-kernel differences.
+两个模型共享相同的微型 MLA 配置，并以相同顺序看到完全相同的批次，
+因此每步训练损失和吞吐量可以直接对比。
+基线模型是使用相同 TransformerBlock 基础组件（`use_moe=False`）的密集堆叠；
+其唯一层深度匹配递归块的唯一参数深度（前奏层 + 1 + 尾声层），
+因此总参数量处于同一数量级。注意力核心是共享的（两个模型都使用 MLA），
+所以任何测量到的差异反映的是循环递归深度架构，而非核心差异。
 
-What the script measures
+脚本测量的内容
 ------------------------
-1. Per-step training loss + tokens/sec for both models, fed identical batches.
-2. Periodic held-out eval loss on a separate dataset split (--eval-every).
-3. Depth-extrapolation sweep at the end: OpenMythos is trained at
-   cfg.max_loop_iters, then evaluated at n_loops in --depth-sweep
-   (default 1,2,4,8,16). This is the experiment the recurrent-depth
-   architecture is designed to win — eval loss should keep dropping past
-   the trained depth if depth extrapolation is working.
-4. Summary table with initial/final/avg train loss, wall-clock, avg tok/s,
-   and sec/step for both models.
+1. 两个模型的每步训练损失 + tokens/秒，使用完全相同的批次。
+2. 定期在独立数据集分割上进行留出评估损失（--eval-every）。
+3. 训练结束后的深度外推扫描：OpenMythos 在 cfg.max_loop_iters 下训练，
+   然后在 --depth-sweep 中的 n_loops 值（默认 1,2,4,8,16）下评估。
+   这是递归深度架构设计要赢得的实验 —— 如果深度外推有效，
+   评估损失应在超过训练深度后继续下降。
+4. 汇总表，包含初始/最终/平均训练损失、总耗时、平均 tok/s
+   和每步秒数。
 
-Defaults are tuned for a laptop CPU run in reasonable time; pass --device cuda
-and bump --steps / --batch-size / --seq-len for a real comparison.
+默认参数针对笔记本 CPU 在合理时间内运行进行了调优；传入 --device cuda
+并增大 --steps / --batch-size / --seq-len 以进行真实对比。
 
-    # Default CPU smoke run (TinyStories, 1k steps, batch 32, seq 256)
+    # 默认 CPU 冒烟测试（TinyStories，1k 步，batch 32，seq 256）
     python tests/small_benchmark.py
 
-    # Heavier GPU run
+    # 更大规模的 GPU 运行
     python tests/small_benchmark.py --steps 5000 --batch-size 64 --seq-len 512 --device cuda
 
-    # Wikitext instead of TinyStories
+    # 使用 Wikitext 替代 TinyStories
     python tests/small_benchmark.py --dataset wikitext --dataset-config wikitext-2-raw-v1
 
-    # Aggressive depth extrapolation sweep
+    # 激进的深度外推扫描
     python tests/small_benchmark.py --depth-sweep 1,2,4,8,16,32
 """
 
@@ -64,16 +61,16 @@ from open_mythos.main import (
 
 
 # ---------------------------------------------------------------------------
-# Baseline: dense GQA + SwiGLU transformer
+# 基线模型：密集 GQA + SwiGLU Transformer
 # ---------------------------------------------------------------------------
 
 
 class BaselineTransformer(nn.Module):
-    """Vanilla decoder-only transformer with dense SwiGLU FFNs.
+    """原版仅解码器 Transformer，使用密集 SwiGLU FFN。
 
-    Reuses OpenMythos's TransformerBlock (attention + FFN kernels are identical)
-    so any measured delta reflects the looped recurrent-depth architecture, not
-    kernel differences. Supports both attn_type="gqa" and "mla".
+    复用 OpenMythos 的 TransformerBlock（注意力 + FFN 核心完全相同），
+    因此任何测量到的差异反映的是循环递归深度架构，而非核心差异。
+    支持 attn_type="gqa" 和 "mla"。
     """
 
     def __init__(self, cfg: MythosConfig, n_layers: int):
@@ -85,9 +82,9 @@ class BaselineTransformer(nn.Module):
         )
         self.norm = RMSNorm(cfg.dim)
         self.head = nn.Linear(cfg.dim, cfg.vocab_size, bias=False)
-        self.head.weight = self.embed.weight  # weight tying
+        self.head.weight = self.embed.weight  # 权重共享
 
-        # MLA applies RoPE to qk_rope_head_dim only; GQA rotates the full head_dim.
+        # MLA 仅对 qk_rope_head_dim 应用 RoPE；GQA 旋转完整的 head_dim。
         rope_dim = (
             cfg.qk_rope_head_dim if cfg.attn_type == "mla" else cfg.dim // cfg.n_heads
         )
@@ -121,16 +118,16 @@ class BaselineTransformer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Dataset: tokenize once, pack into fixed-length next-token pairs
+# 数据集：一次性分词，打包为固定长度的下一个 token 对
 # ---------------------------------------------------------------------------
 
 
 class PackedLMDataset(Dataset):
-    """Flatten an HF text dataset into one token buffer, slice fixed-length pairs.
+    """将 HF 文本数据集展平为一个 token 缓冲区，切分为固定长度的对。
 
-    Accepts either map-style or streaming (`IterableDataset`) HF datasets —
-    iteration stops once `max_tokens` are collected, so large corpora like
-    TinyStories can be streamed without downloading the whole thing.
+    同时接受映射式和流式（`IterableDataset`）HF 数据集 ——
+    迭代在收集到 `max_tokens` 后停止，因此像 TinyStories 这样的大型语料库
+    可以流式加载而无需下载全部数据。
     """
 
     def __init__(
@@ -164,7 +161,7 @@ class PackedLMDataset(Dataset):
 
 
 # ---------------------------------------------------------------------------
-# Metrics
+# 指标
 # ---------------------------------------------------------------------------
 
 
@@ -204,7 +201,7 @@ class Metrics:
 
 
 # ---------------------------------------------------------------------------
-# Training step
+# 训练步骤
 # ---------------------------------------------------------------------------
 
 
@@ -216,7 +213,7 @@ def train_step(
     device: torch.device,
     vocab_size: int,
 ) -> tuple[float, float]:
-    """Run one optimizer step; return (loss, wall-clock seconds)."""
+    """执行一步优化器更新；返回 (损失值, 耗时秒数)。"""
     t0 = time.perf_counter()
     model.train()
     optimizer.zero_grad()
@@ -239,10 +236,10 @@ def evaluate(
     max_batches: int | None = None,
     n_loops: int | None = None,
 ) -> float:
-    """Mean cross-entropy over (up to `max_batches`) of the loader.
+    """在 loader 的（最多 `max_batches` 个）批次上计算平均交叉熵。
 
-    `n_loops` is only forwarded to OpenMythos; for any other module the kwarg
-    is dropped, so the same function benchmarks baseline and mythos uniformly.
+    `n_loops` 仅传递给 OpenMythos；对于其他模块该参数会被忽略，
+    因此同一函数可以统一地对基线和 mythos 进行基准测试。
     """
     model.eval()
     total_loss = 0.0
@@ -256,7 +253,7 @@ def evaluate(
             logits = model(x, n_loops=n_loops)
         else:
             logits = model(x)
-        # sum-reduction so we weight by token count, not batch count
+        # 使用 sum 归约以按 token 数量加权，而非按批次数量
         loss = F.cross_entropy(logits.view(-1, vocab_size), y.view(-1), reduction="sum")
         total_loss += loss.item()
         total_tokens += y.numel()
@@ -264,16 +261,16 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
-# Config + utilities
+# 配置 + 工具函数
 # ---------------------------------------------------------------------------
 
 
 def build_tiny_cfg(vocab_size: int, seq_len: int) -> MythosConfig:
-    """Tiny shared config with MLA attention — runs in reasonable time on CPU.
+    """微型共享配置，使用 MLA 注意力 —— 在 CPU 上可在合理时间内运行。
 
-    MLA LoRA ranks and head dims scale with `dim=128` instead of the
-    2048-dim-sized defaults (q_lora_rank=1536, qk_nope_head_dim=128, ...),
-    which would otherwise dominate the parameter count at this scale.
+    MLA 的 LoRA 秩和头维度按 `dim=128` 缩放，而非
+    2048 维大小的默认值（q_lora_rank=1536, qk_nope_head_dim=128, ...），
+    否则在此规模下参数量会被这些值主导。
     """
     return MythosConfig(
         vocab_size=vocab_size,
@@ -313,7 +310,7 @@ def fmt_count(n: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 主函数
 # ---------------------------------------------------------------------------
 
 
@@ -323,13 +320,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--seq-len", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
-    # Defaults point at TinyStories — simpler vocabulary + shorter documents
-    # lets a dim=128 model actually reach a meaningful loss in modest time.
+    # 默认指向 TinyStories —— 更简单的词汇表 + 更短的文档
+    # 使得 dim=128 的模型能在适度时间内达到有意义的损失。
     p.add_argument("--dataset", default="roneneldan/TinyStories")
     p.add_argument(
         "--dataset-config",
         default="",
-        help="pass '' for datasets with no config (e.g. TinyStories)",
+        help="对于没有配置的数据集传入 ''（例如 TinyStories）",
     )
     p.add_argument("--train-split", default="train")
     p.add_argument("--eval-split", default="validation")
@@ -337,13 +334,13 @@ def parse_args() -> argparse.Namespace:
         "--train-tokens",
         type=int,
         default=5_000_000,
-        help="max tokens to materialize for the training buffer",
+        help="训练缓冲区最大物化 token 数",
     )
     p.add_argument(
         "--eval-tokens",
         type=int,
         default=200_000,
-        help="max tokens to materialize for the held-out eval buffer",
+        help="留出评估缓冲区最大物化 token 数",
     )
     p.add_argument("--text-field", default="text")
     p.add_argument("--tokenizer", default="gpt2")
@@ -352,13 +349,13 @@ def parse_args() -> argparse.Namespace:
         "--eval-every",
         type=int,
         default=200,
-        help="run held-out eval every N steps (0 disables)",
+        help="每 N 步运行一次留出评估（0 表示禁用）",
     )
     p.add_argument("--eval-batches", type=int, default=20)
     p.add_argument(
         "--depth-sweep",
         default="1,2,4,8,16",
-        help="comma-separated n_loops values for OpenMythos depth-extrapolation eval",
+        help="逗号分隔的 n_loops 值，用于 OpenMythos 深度外推评估",
     )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
@@ -369,7 +366,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_text_ds(name: str, config: str, split: str):
-    """Streaming `load_dataset` with optional config (empty string == no config)."""
+    """流式 `load_dataset`，支持可选配置（空字符串 == 无配置）。"""
     if config:
         return load_dataset(name, config, split=split, streaming=True)
     return load_dataset(name, split=split, streaming=True)
@@ -380,20 +377,20 @@ def main() -> None:
     device = torch.device(args.device)
 
     print(
-        f"[setup] device={device}  batch={args.batch_size}  "
+        f"[设置] device={device}  batch={args.batch_size}  "
         f"seq_len={args.seq_len}  steps={args.steps}"
     )
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    # AutoTokenizer.vocab_size can be smaller than the head size for BPE
-    # tokenizers with added tokens; use len(tokenizer) to be safe.
+    # AutoTokenizer.vocab_size 对于带有额外 token 的 BPE 分词器
+    # 可能小于头部大小；使用 len(tokenizer) 更安全。
     vocab_size = len(tokenizer)
-    print(f"[setup] tokenizer={args.tokenizer}  vocab_size={vocab_size:,}")
+    print(f"[设置] tokenizer={args.tokenizer}  vocab_size={vocab_size:,}")
 
     # ------------------------------------------------------------------
-    # Data: streamed train + held-out eval splits
+    # 数据：流式训练 + 留出评估分割
     # ------------------------------------------------------------------
-    print(f"[setup] dataset={args.dataset}  config={args.dataset_config or '∅'}")
+    print(f"[设置] dataset={args.dataset}  config={args.dataset_config or '∅'}")
     raw_train = load_text_ds(args.dataset, args.dataset_config, args.train_split)
     train_ds = PackedLMDataset(
         raw_train, tokenizer, args.seq_len, args.train_tokens, args.text_field
@@ -403,8 +400,8 @@ def main() -> None:
         raw_eval, tokenizer, args.seq_len, args.eval_tokens, args.text_field
     )
     print(
-        f"[setup] train tokens={train_ds.data.numel():,}  pairs={len(train_ds)}  |  "
-        f"eval tokens={eval_ds.data.numel():,}  pairs={len(eval_ds)}"
+        f"[设置] 训练 tokens={train_ds.data.numel():,}  对数={len(train_ds)}  |  "
+        f"评估 tokens={eval_ds.data.numel():,}  对数={len(eval_ds)}"
     )
 
     torch.manual_seed(args.seed)
@@ -416,27 +413,27 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Models — same init seed so both start from the same embedding
+    # 模型 —— 相同的初始化种子，使两者从相同的嵌入开始
     # ------------------------------------------------------------------
     cfg = build_tiny_cfg(vocab_size, args.seq_len)
 
     torch.manual_seed(args.seed)
     mythos = OpenMythos(cfg).to(device)
 
-    # Parameter-matched depth: prelude + one unique recurrent block + coda.
+    # 参数匹配深度：前奏层 + 一个唯一的递归块 + 尾声层。
     baseline_layers = cfg.prelude_layers + 1 + cfg.coda_layers
     torch.manual_seed(args.seed)
     baseline = BaselineTransformer(cfg, n_layers=baseline_layers).to(device)
 
     n_m, n_b = count_params(mythos), count_params(baseline)
     print(
-        f"[setup] OpenMythos params  = {fmt_count(n_m)}  ({n_m:,})\n"
-        f"[setup] Baseline  params  = {fmt_count(n_b)}  ({n_b:,})  "
-        f"[{baseline_layers} layers]"
+        f"[设置] OpenMythos 参数  = {fmt_count(n_m)}  ({n_m:,})\n"
+        f"[设置] 基线模型  参数  = {fmt_count(n_b)}  ({n_b:,})  "
+        f"[{baseline_layers} 层]"
     )
     print(
-        f"[setup] Mythos runtime depth = prelude({cfg.prelude_layers}) + "
-        f"loops({cfg.max_loop_iters}) + coda({cfg.coda_layers}) = "
+        f"[设置] Mythos 运行时深度 = 前奏层({cfg.prelude_layers}) + "
+        f"循环({cfg.max_loop_iters}) + 尾声层({cfg.coda_layers}) = "
         f"{cfg.prelude_layers + cfg.max_loop_iters + cfg.coda_layers}"
     )
 
@@ -448,17 +445,17 @@ def main() -> None:
     )
 
     mm, bm = Metrics(), Metrics()
-    eval_history: list[tuple[int, float, float]] = []  # (step, mythos_eval, base_eval)
+    eval_history: list[tuple[int, float, float]] = []  # (步数, mythos评估, 基线评估)
 
     header = (
-        f"\n{'step':>6} | {'mythos loss':>12} | {'base loss':>10} | "
-        f"{'mythos tok/s':>13} | {'base tok/s':>11}"
+        f"\n{'步数':>6} | {'mythos 损失':>12} | {'基线损失':>10} | "
+        f"{'mythos tok/s':>13} | {'基线 tok/s':>11}"
     )
     print(header)
     print("-" * len(header))
 
     # ------------------------------------------------------------------
-    # Training loop with periodic held-out eval
+    # 训练循环，定期进行留出评估
     # ------------------------------------------------------------------
     data_iter = iter(train_loader)
     t_total = time.perf_counter()
@@ -493,69 +490,69 @@ def main() -> None:
             )
             eval_history.append((step, eval_m, eval_b))
             print(
-                f"  [eval @ step {step}]  mythos {eval_m:.4f}   baseline {eval_b:.4f}   "
+                f"  [评估 @ 步数 {step}]  mythos {eval_m:.4f}   基线 {eval_b:.4f}   "
                 f"(Δ = {eval_m - eval_b:+.4f})"
             )
 
     total_wall = time.perf_counter() - t_total
 
     # ------------------------------------------------------------------
-    # Summary
+    # 汇总
     # ------------------------------------------------------------------
     bar = "=" * 70
-    print(f"\n{bar}\nSummary ({args.steps} steps, wall clock {total_wall:.1f}s)\n{bar}")
-    print(f"  {'':<24} {'OpenMythos':>16}   {'Baseline':>16}")
-    print(f"  {'params':<24} {fmt_count(n_m):>16}   {fmt_count(n_b):>16}")
+    print(f"\n{bar}\n汇总（{args.steps} 步，总耗时 {total_wall:.1f}s）\n{bar}")
+    print(f"  {'':<24} {'OpenMythos':>16}   {'基线模型':>16}")
+    print(f"  {'参数量':<24} {fmt_count(n_m):>16}   {fmt_count(n_b):>16}")
     print(
-        f"  {'initial train (first 10)':<24} "
+        f"  {'初始训练（前 10 步）':<24} "
         f"{mm.initial_loss:>16.4f}   {bm.initial_loss:>16.4f}"
     )
     print(
-        f"  {'final train (last 10)':<24} "
+        f"  {'最终训练（后 10 步）':<24} "
         f"{mm.final_loss:>16.4f}   {bm.final_loss:>16.4f}"
     )
     print(
-        f"  {'avg train (all steps)':<24} "
+        f"  {'平均训练（所有步）':<24} "
         f"{mm.avg_loss:>16.4f}   {bm.avg_loss:>16.4f}"
     )
     print(
-        f"  {'train time (sec)':<24} "
+        f"  {'训练时间（秒）':<24} "
         f"{mm.total_time:>16.2f}   {bm.total_time:>16.2f}"
     )
     print(
-        f"  {'avg tok/s':<24} " f"{mm.tok_per_sec:>16,.0f}   {bm.tok_per_sec:>16,.0f}"
+        f"  {'平均 tok/s':<24} " f"{mm.tok_per_sec:>16,.0f}   {bm.tok_per_sec:>16,.0f}"
     )
     print(
-        f"  {'sec/step':<24} "
+        f"  {'秒/步':<24} "
         f"{mm.total_time / max(1, mm.steps):>16.4f}   "
         f"{bm.total_time / max(1, bm.steps):>16.4f}"
     )
 
     # ------------------------------------------------------------------
-    # Depth extrapolation: OpenMythos eval loss as a function of n_loops.
-    # Trained at cfg.max_loop_iters; we run inference with a sweep to see
-    # whether additional loops keep improving (depth extrapolation) or the
-    # model collapses outside the trained regime.
+    # 深度外推：OpenMythos 评估损失作为 n_loops 的函数。
+    # 在 cfg.max_loop_iters 下训练；我们用一组扫描值进行推理，
+    # 以观察额外的循环是否持续改善（深度外推）或者
+    # 模型在训练范围外是否崩溃。
     # ------------------------------------------------------------------
     loops_sweep = sorted({int(s) for s in args.depth_sweep.split(",") if s.strip()})
-    print(f"\n{bar}\nDepth extrapolation (held-out eval, full eval set)\n{bar}")
+    print(f"\n{bar}\n深度外推（留出评估，完整评估集）\n{bar}")
     baseline_eval = evaluate(baseline, eval_loader, device, vocab_size)
-    print(f"  Baseline (fixed depth)          : eval loss = {baseline_eval:.4f}")
-    # First collect all sweep losses, then print with deltas vs. the trained depth.
+    print(f"  基线（固定深度）          : 评估损失 = {baseline_eval:.4f}")
+    # 先收集所有扫描损失，然后打印与训练深度的差异。
     sweep: list[tuple[int, float]] = []
     for nl in loops_sweep:
         sweep.append(
             (nl, evaluate(mythos, eval_loader, device, vocab_size, n_loops=nl))
         )
     trained_loss = next((loss for nl, loss in sweep if nl == cfg.max_loop_iters), None)
-    print(f"  OpenMythos (trained at n_loops={cfg.max_loop_iters}):")
-    print(f"    {'n_loops':>8}  {'eval loss':>10}  {'Δ vs trained':>14}")
+    print(f"  OpenMythos（在 n_loops={cfg.max_loop_iters} 下训练）:")
+    print(f"    {'n_loops':>8}  {'评估损失':>10}  {'相对训练深度 Δ':>14}")
     for nl, loss in sweep:
         if trained_loss is None or nl == cfg.max_loop_iters:
             delta_str = ""
         else:
             delta_str = f"{loss - trained_loss:+.4f}"
-        marker = " ←trained" if nl == cfg.max_loop_iters else ""
+        marker = " ←训练深度" if nl == cfg.max_loop_iters else ""
         print(f"    {nl:>8}  {loss:>10.4f}  {delta_str:>14}{marker}")
 
 

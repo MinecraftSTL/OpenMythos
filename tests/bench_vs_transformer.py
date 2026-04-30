@@ -1,21 +1,21 @@
 """
-OpenMythos vs. vanilla GQA+MoE transformer benchmark.
+OpenMythos 与原版 GQA+MoE Transformer 基准测试。
 
-Compares OpenMythos (Prelude + looped Recurrent Block + Coda with ACT halting,
-LTI-stable injection, LoRA depth adapter) against a parameter-matched vanilla
-transformer built from the same GQAttention + MoEFFN building blocks stacked
-non-recurrently. The baseline reuses OpenMythos primitives so the comparison
-isolates the recurrent-depth architecture, not the kernels.
+将 OpenMythos（前奏层 + 循环递归块 + 尾声层，含 ACT 停止机制、
+LTI 稳定注入、LoRA 深度适配器）与参数匹配的原版 Transformer 进行对比。
+原版 Transformer 使用相同的 GQAttention + MoEFFN 构建块以非递归方式堆叠。
+基线模型复用 OpenMythos 的基础组件，因此对比隔离的是递归深度架构，
+而非底层计算核心。
 
-Metrics reported:
-    - Parameter counts (total, MoE-active approximation)
-    - Prefill latency + throughput at several sequence lengths
-    - Decode (autoregressive step) latency with KV cache
-    - Peak memory (CUDA only)
-    - OpenMythos depth-scaling sweep: latency vs. n_loops
+报告的指标：
+    - 参数数量（总量、MoE 活跃参数近似值）
+    - 多种序列长度下的预填充延迟 + 吞吐量
+    - 带 KV 缓存的解码（自回归步骤）延迟
+    - 峰值显存（仅 CUDA）
+    - OpenMythos 深度缩放扫描：延迟 vs. n_loops
 
-Run:
-    python benchmarks/bench_vs_transformer.py                     # small CPU/GPU smoke test
+运行方式：
+    python benchmarks/bench_vs_transformer.py                     # 小规模 CPU/GPU 冒烟测试
     python benchmarks/bench_vs_transformer.py --size 1b --device cuda
     python benchmarks/bench_vs_transformer.py --seq-lens 128,512,2048 --n-loops 1,4,8,16
 """
@@ -41,16 +41,16 @@ from open_mythos.main import (
 
 
 # ---------------------------------------------------------------------------
-# Baseline: non-looped GQA + MoE transformer
+# 基线模型：非循环 GQA + MoE Transformer
 # ---------------------------------------------------------------------------
 
 
 class BaselineTransformer(nn.Module):
     """
-    Vanilla decoder-only transformer with GQA attention and MoE FFNs, stacked
-    non-recurrently. Shares TransformerBlock / GQAttention / MoEFFN kernels
-    with OpenMythos so any speed delta is attributable to the recurrent-depth
-    architecture rather than the underlying attention/FFN implementation.
+    原版仅解码器 Transformer，使用 GQA 注意力和 MoE FFN，
+    以非递归方式堆叠。与 OpenMythos 共享 TransformerBlock / GQAttention / MoEFFN
+    计算核心，因此任何速度差异都归因于递归深度架构，
+    而非底层注意力/FFN 实现。
     """
 
     def __init__(self, cfg: MythosConfig, n_layers: int):
@@ -92,7 +92,7 @@ class BaselineTransformer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Timing utilities
+# 计时工具
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +102,7 @@ def _sync(device: torch.device) -> None:
 
 
 def time_fn(fn, device: torch.device, warmup: int = 2, trials: int = 5) -> float:
-    """Returns median wall-clock seconds over `trials` after `warmup` runs."""
+    """在 `warmup` 次预热后，返回 `trials` 次运行的中位数耗时（秒）。"""
     for _ in range(warmup):
         fn()
     _sync(device)
@@ -130,25 +130,25 @@ def reset_mem(device: torch.device) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Parameter counting
+# 参数计数
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ParamCounts:
     total: int
-    moe_active_est: int  # active per token (shared + top-k routed)
+    moe_active_est: int  # 每个 token 的活跃参数（共享 + top-k 路由）
 
 
 def count_params(model: nn.Module, cfg: MythosConfig) -> ParamCounts:
     total = sum(p.numel() for p in model.parameters())
-    # Rough active-per-token count for MoE layers: shared + top-k routed fraction.
-    # For simplicity we report total and an estimated activation ratio separately.
+    # MoE 层每个 token 的粗略活跃参数计数：共享 + top-k 路由比例。
+    # 为简化起见，分别报告总量和估计的激活比率。
     active_ratio = (cfg.n_shared_experts + cfg.n_experts_per_tok) / (
         cfg.n_shared_experts + cfg.n_experts
     )
-    # Only FFN parameters shrink under activation; attention + embed/head are always on.
-    # This is a coarse lower bound on active params.
+    # 只有 FFN 参数在激活时缩减；注意力 + 嵌入/输出头始终活跃。
+    # 这是活跃参数的粗略下界。
     ffn_params = 0
     other_params = 0
     for name, p in model.named_parameters():
@@ -161,7 +161,7 @@ def count_params(model: nn.Module, cfg: MythosConfig) -> ParamCounts:
 
 
 # ---------------------------------------------------------------------------
-# Benchmarks
+# 基准测试
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +173,7 @@ def bench_prefill(
     device: torch.device,
     n_loops: Optional[int] = None,
 ) -> tuple[float, float]:
-    """Returns (median_seconds, tokens_per_sec)."""
+    """返回 (中位数秒数, tokens/秒)。"""
     ids = torch.randint(0, vocab_size, (batch, seq_len), device=device)
 
     if isinstance(model, OpenMythos):
@@ -203,8 +203,8 @@ def bench_decode(
     n_loops: Optional[int] = None,
 ) -> tuple[float, float]:
     """
-    Prefill a `prompt_len` prompt, then time `decode_steps` single-token decode
-    steps with KV cache. Returns (avg_seconds_per_step, decode_tokens_per_sec).
+    预填充 `prompt_len` 长度的提示词，然后计时 `decode_steps` 个单 token 解码步骤
+    （使用 KV 缓存）。返回 (每步平均秒数, 解码 tokens/秒)。
     """
     prompt = torch.randint(0, vocab_size, (batch, prompt_len), device=device)
 
@@ -234,12 +234,12 @@ def bench_decode(
 
 
 # ---------------------------------------------------------------------------
-# Config helpers
+# 配置辅助函数
 # ---------------------------------------------------------------------------
 
 
 def small_cfg() -> MythosConfig:
-    """Tiny config for smoke tests — runs on CPU in seconds."""
+    """用于冒烟测试的微型配置 —— 在 CPU 上几秒内即可运行。"""
     return MythosConfig(
         vocab_size=1024,
         dim=256,
@@ -265,14 +265,14 @@ def get_cfg(size: str) -> MythosConfig:
         return small_cfg()
     if size == "1b":
         cfg = mythos_1b()
-        # GQA for apples-to-apples; MLA changes KV shape semantics.
+        # 使用 GQA 以进行公平对比；MLA 会改变 KV 形状语义。
         cfg.attn_type = "gqa"
         return cfg
-    raise ValueError(f"unknown size: {size!r} (use 'small' or '1b')")
+    raise ValueError(f"未知的规模: {size!r}（请使用 'small' 或 '1b'）")
 
 
 # ---------------------------------------------------------------------------
-# Reporting
+# 报告输出
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +290,7 @@ def print_header(title: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 主函数
 # ---------------------------------------------------------------------------
 
 
@@ -306,30 +306,30 @@ def parse_args() -> argparse.Namespace:
         "--dtype",
         default="auto",
         choices=["auto", "fp32", "bf16", "fp16"],
-        help="'auto' picks fp32 on CPU and bf16 on CUDA",
+        help="'auto' 在 CPU 上选择 fp32，在 CUDA 上选择 bf16",
     )
     p.add_argument("--batch", type=int, default=1)
     p.add_argument(
         "--seq-lens",
         default="128,512",
-        help="comma-separated prefill sequence lengths",
+        help="逗号分隔的预填充序列长度",
     )
     p.add_argument(
         "--n-loops",
         default="1,4,8",
-        help="comma-separated loop counts to sweep (OpenMythos only)",
+        help="逗号分隔的循环次数（仅 OpenMythos）",
     )
     p.add_argument(
         "--decode-steps",
         type=int,
         default=32,
-        help="number of autoregressive decode steps after prefill",
+        help="预填充后的自回归解码步数",
     )
     p.add_argument(
         "--decode-prompt-len",
         type=int,
         default=128,
-        help="prefill length before decode",
+        help="解码前的预填充长度",
     )
     return p.parse_args()
 
@@ -350,7 +350,7 @@ def main() -> None:
     n_loops_sweep = [int(s) for s in args.n_loops.split(",") if s.strip()]
 
     cfg = get_cfg(args.size)
-    print_header(f"Config: size={args.size}  device={device}  dtype={dtype_arg}")
+    print_header(f"配置: size={args.size}  device={device}  dtype={dtype_arg}")
     print(
         f"  dim={cfg.dim}  n_heads={cfg.n_heads}  n_kv_heads={cfg.n_kv_heads}  "
         f"prelude={cfg.prelude_layers}  coda={cfg.coda_layers}  "
@@ -359,8 +359,8 @@ def main() -> None:
         f"top_k={cfg.n_experts_per_tok}  expert_dim={cfg.expert_dim}"
     )
 
-    # Build models. Baseline depth = prelude + 1 (one unique recurrent block) + coda
-    # to match the unique-parameter depth of OpenMythos (parameter-matched baseline).
+    # 构建模型。基线深度 = 前奏层 + 1（一个唯一的递归块）+ 尾声层
+    # 以匹配 OpenMythos 的唯一参数深度（参数匹配基线）。
     baseline_n_layers = cfg.prelude_layers + 1 + cfg.coda_layers
 
     torch.manual_seed(0)
@@ -375,36 +375,36 @@ def main() -> None:
     m_params = count_params(mythos, cfg)
     b_params = count_params(baseline, cfg)
     print_header(
-        "Parameters (block-matched: baseline depth = prelude + 1 recurrent + coda)"
+        "参数（块匹配：基线深度 = 前奏层 + 1 递归层 + 尾声层）"
     )
     print(
-        f"  OpenMythos : total={fmt_count(m_params.total):>10}   "
-        f"active/tok≈{fmt_count(m_params.moe_active_est):>10}"
+        f"  OpenMythos : 总量={fmt_count(m_params.total):>10}   "
+        f"活跃/token≈{fmt_count(m_params.moe_active_est):>10}"
     )
     print(
-        f"  Baseline   : total={fmt_count(b_params.total):>10}   "
-        f"active/tok≈{fmt_count(b_params.moe_active_est):>10}"
+        f"  基线模型   : 总量={fmt_count(b_params.total):>10}   "
+        f"活跃/token≈{fmt_count(b_params.moe_active_est):>10}"
     )
     print(
-        f"  Baseline unique layers = {baseline_n_layers}  "
-        f"(Mythos total runtime depth at max_loops = "
-        f"{cfg.prelude_layers + cfg.max_loop_iters + cfg.coda_layers})"
+        f"  基线唯一层数 = {baseline_n_layers}  "
+        f"（Mythos 在 max_loops 时的总运行时深度 = "
+        f"{cfg.prelude_layers + cfg.max_loop_iters + cfg.coda_layers}）"
     )
 
-    # ---- Prefill ----
-    print_header("Prefill latency (batch={batch})".format(batch=args.batch))
-    header = f"  {'model':<26} {'seq':>6} {'sec':>10} {'tok/s':>12} {'peak MB':>10}"
+    # ---- 预填充 ----
+    print_header("预填充延迟（batch={batch}）".format(batch=args.batch))
+    header = f"  {'模型':<26} {'序列':>6} {'秒':>10} {'tok/s':>12} {'峰值 MB':>10}"
     print(header)
     for seq_len in seq_lens:
         if seq_len > cfg.max_seq_len:
-            print(f"  skip seq_len={seq_len} (> max_seq_len={cfg.max_seq_len})")
+            print(f"  跳过 seq_len={seq_len}（> max_seq_len={cfg.max_seq_len}）")
             continue
 
         reset_mem(device)
         secs, tps = bench_prefill(baseline, cfg.vocab_size, args.batch, seq_len, device)
         mem = peak_mem_mb(device)
         print(
-            f"  {'Baseline (stacked)':<26} {seq_len:>6} "
+            f"  {'基线（堆叠）':<26} {seq_len:>6} "
             f"{secs*1000:>9.2f}ms {tps:>12,.0f} {mem:>10.1f}"
         )
 
@@ -419,12 +419,12 @@ def main() -> None:
                 f"{secs*1000:>9.2f}ms {tps:>12,.0f} {mem:>10.1f}"
             )
 
-    # ---- Decode ----
+    # ---- 解码 ----
     print_header(
-        f"Decode latency (prefill {args.decode_prompt_len} tokens + "
-        f"{args.decode_steps} decode steps, batch={args.batch})"
+        f"解码延迟（预填充 {args.decode_prompt_len} tokens + "
+        f"{args.decode_steps} 解码步骤，batch={args.batch}）"
     )
-    print(f"  {'model':<26} {'sec/step':>12} {'decode tok/s':>14}")
+    print(f"  {'模型':<26} {'秒/步':>12} {'解码 tok/s':>14}")
 
     reset_mem(device)
     per_step, tps = bench_decode(
@@ -435,7 +435,7 @@ def main() -> None:
         args.decode_steps,
         device,
     )
-    print(f"  {'Baseline (stacked)':<26} {per_step*1000:>10.2f}ms {tps:>14,.1f}")
+    print(f"  {'基线（堆叠）':<26} {per_step*1000:>10.2f}ms {tps:>14,.1f}")
 
     for nl in n_loops_sweep:
         reset_mem(device)
@@ -453,13 +453,13 @@ def main() -> None:
             f"{per_step*1000:>10.2f}ms {tps:>14,.1f}"
         )
 
-    # ---- Depth scaling ----
+    # ---- 深度缩放 ----
     print_header(
-        "OpenMythos depth scaling (fixed seq={}, batch={})".format(
+        "OpenMythos 深度缩放（固定 seq={}，batch={}）".format(
             seq_lens[0], args.batch
         )
     )
-    print(f"  {'n_loops':>8} {'sec':>10} {'tok/s':>12} {'Δ vs loops=1':>14}")
+    print(f"  {'n_loops':>8} {'秒':>10} {'tok/s':>12} {'相对 loops=1':>14}")
     base_secs = None
     for nl in n_loops_sweep:
         reset_mem(device)
@@ -473,7 +473,7 @@ def main() -> None:
             delta = f"{secs / base_secs:.2f}x"
         print(f"  {nl:>8} {secs*1000:>9.2f}ms {tps:>12,.0f} {delta:>14}")
 
-    print("\nDone.")
+    print("\n完成。")
 
 
 if __name__ == "__main__":

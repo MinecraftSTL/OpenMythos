@@ -7,4 +7,4 @@ cfg = mythos_1b()
 model = OpenMythos(cfg)
 
 total = sum(p.numel() for p in model.parameters())
-print(f"Parameters: {total:,}")
+print(f"参数量: {total:,}")

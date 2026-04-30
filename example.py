@@ -2,7 +2,7 @@ import torch
 from open_mythos.main import OpenMythos, MythosConfig
 
 
-attn_type = "mla"  # or "gqa"
+attn_type = "mla"  # 或 "gqa"
 
 base = {
     "vocab_size": 1000,
@@ -35,16 +35,16 @@ else:
 
 model = OpenMythos(cfg)
 total = sum(p.numel() for p in model.parameters())
-print(f"\n[{attn_type.upper()}] Parameters: {total:,}")
+print(f"\n[{attn_type.upper()}] 参数量: {total:,}")
 
 ids = torch.randint(0, cfg.vocab_size, (2, 16))
 logits = model(ids, n_loops=4)
-print(f"[{attn_type.upper()}] Logits shape: {logits.shape}")
+print(f"[{attn_type.upper()}] Logits 形状: {logits.shape}")
 
 out = model.generate(ids, max_new_tokens=8, n_loops=8)
-print(f"[{attn_type.upper()}] Generated shape: {out.shape}")
+print(f"[{attn_type.upper()}] 生成结果形状: {out.shape}")
 
 A = model.recurrent.injection.get_A()
 print(
-    f"[{attn_type.upper()}] Spectral radius ρ(A) max: {A.max().item():.4f} (must be < 1)"
+    f"[{attn_type.upper()}] 谱半径 ρ(A) 最大值: {A.max().item():.4f} (必须 < 1)"
 )

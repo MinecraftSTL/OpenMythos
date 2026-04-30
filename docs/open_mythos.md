@@ -1,32 +1,32 @@
-# `OpenMythos` — Class Reference
+# `OpenMythos` — 类参考
 
-**Module:** `open_mythos.main`  
-**Base class:** `torch.nn.Module`
+**模块：** `open_mythos.main`  
+**基类：** `torch.nn.Module`
 
 ---
 
-## Overview
+## 概述
 
-`OpenMythos` is the top-level model class implementing the Recurrent-Depth Transformer (RDT) architecture described in [the OpenMythos hypothesis](../README.md). It assembles three functional stages — **Prelude**, **Recurrent Block**, and **Coda** — into a complete autoregressive language model.
+`OpenMythos` 是实现递归深度 Transformer（RDT）架构的顶层模型类，架构描述见 [OpenMythos 假说](../README.md)。它将三个功能阶段——**前奏（Prelude）**、**递归块（Recurrent Block）**和**尾声（Coda）**——组装成一个完整的自回归语言模型。
 
 ```
-Input token IDs  (B, T)
+输入 token ID  (B, T)
         ↓
-   [Embedding]          token index → dim-dimensional vector
+   [嵌入层]            token 索引 → dim 维向量
         ↓
-   [Prelude]            prelude_layers × standard TransformerBlock  (run once)
+   [前奏]              prelude_layers × 标准 TransformerBlock（运行一次）
         ↓
-   [Recurrent Block]    one TransformerBlock looped T times
+   [递归块]            一个 TransformerBlock 循环 T 次
         ↑___________↓   h_{t+1} = A·h_t + B·e + Transformer(h_t, e)
         ↓
-   [Coda]               coda_layers × standard TransformerBlock  (run once)
+   [尾声]              coda_layers × 标准 TransformerBlock（运行一次）
         ↓
-   [RMSNorm → LM head]
+   [RMSNorm → LM 头]
         ↓
-Output logits  (B, T, vocab_size)
+输出 logits  (B, T, vocab_size)
 ```
 
-Every architectural choice in `OpenMythos` can be configured through a single [`MythosConfig`](#mythosconfig) dataclass passed at construction.
+`OpenMythos` 中的每个架构选择都可以通过构造时传入的单个 [`MythosConfig`](#mythosconfig) 数据类进行配置。
 
 ---
 
@@ -37,79 +37,79 @@ Every architectural choice in `OpenMythos` can be configured through a single [`
 class MythosConfig
 ```
 
-All hyperparameters for the model are stored in this single frozen-style dataclass. Pass an instance to `OpenMythos.__init__`.
+模型的所有超参数都存储在这个单一的冻结式数据类中。将实例传递给 `OpenMythos.__init__`。
 
-### Core fields
+### 核心字段
 
-| Field | Type | Default | Description |
+| 字段 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
-| `vocab_size` | `int` | `32000` | Token vocabulary size; sets the embedding and LM head dimension |
-| `dim` | `int` | `2048` | Model hidden dimension — the width of the residual stream throughout |
-| `n_heads` | `int` | `16` | Number of query attention heads |
-| `n_kv_heads` | `int` | `4` | Number of key/value heads (GQA only); `n_heads // n_kv_heads` Q heads share each KV pair |
-| `max_seq_len` | `int` | `4096` | Maximum sequence length; RoPE frequencies are precomputed up to this length |
-| `max_loop_iters` | `int` | `16` | Default recurrent loop depth T at inference. Can be overridden per call |
-| `prelude_layers` | `int` | `2` | Number of standard transformer blocks run once before the recurrent loop |
-| `coda_layers` | `int` | `2` | Number of standard transformer blocks run once after the recurrent loop |
+| `vocab_size` | `int` | `32000` | 词汇表大小；决定嵌入层和 LM 头的维度 |
+| `dim` | `int` | `2048` | 模型隐藏维度——整个残差流的宽度 |
+| `n_heads` | `int` | `16` | 查询注意力头数 |
+| `n_kv_heads` | `int` | `4` | 键/值头数（仅 GQA）；每 `n_heads // n_kv_heads` 个 Q 头共享一个 KV 对 |
+| `max_seq_len` | `int` | `4096` | 最大序列长度；RoPE 频率预计算到此长度 |
+| `max_loop_iters` | `int` | `16` | 推理时默认的递归循环深度 T。可在每次调用时覆盖 |
+| `prelude_layers` | `int` | `2` | 递归循环前运行一次的标准 Transformer 块数量 |
+| `coda_layers` | `int` | `2` | 递归循环后运行一次的标准 Transformer 块数量 |
 
-### Attention fields
+### 注意力字段
 
-`attn_type` selects between two complete attention implementations. All other attention fields are implementation-specific.
+`attn_type` 在两种完整的注意力实现之间选择。其他注意力字段是特定实现所需的。
 
-| Field | Type | Default | Description |
+| 字段 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
-| `attn_type` | `str` | `"mla"` | `"gqa"` for Grouped Query Attention; `"mla"` for Multi-Latent Attention |
-| `kv_lora_rank` | `int` | `512` | **[MLA only]** Compressed KV latent rank stored in the cache instead of full K and V |
-| `q_lora_rank` | `int` | `1536` | **[MLA only]** Compressed Q latent rank |
-| `qk_rope_head_dim` | `int` | `64` | **[MLA only]** Per-head dimension receiving RoPE positional encoding |
-| `qk_nope_head_dim` | `int` | `128` | **[MLA only]** Per-head dimension without positional encoding |
-| `v_head_dim` | `int` | `128` | **[MLA only]** Per-head value dimension |
+| `attn_type` | `str` | `"mla"` | `"gqa"` 为分组查询注意力；`"mla"` 为多潜在注意力 |
+| `kv_lora_rank` | `int` | `512` | **[仅 MLA]** 缓存中存储的压缩 KV 潜在秩，替代完整的 K 和 V |
+| `q_lora_rank` | `int` | `1536` | **[仅 MLA]** 压缩 Q 潜在秩 |
+| `qk_rope_head_dim` | `int` | `64` | **[仅 MLA]** 接收 RoPE 位置编码的每头维度 |
+| `qk_nope_head_dim` | `int` | `128` | **[仅 MLA]** 不含位置编码的每头维度 |
+| `v_head_dim` | `int` | `128` | **[仅 MLA]** 每头值维度 |
 
-**GQA vs MLA:** GQA reduces KV cache by having fewer KV heads than Q heads (factor of `n_heads / n_kv_heads`). MLA achieves a much larger reduction by caching a low-rank KV latent (`kv_lora_rank`) and the RoPE keys (`n_heads × qk_rope_head_dim`), then reconstructing full K and V on the fly. At production scale MLA yields roughly 10–20× smaller KV cache than standard attention.
+**GQA vs MLA：** GQA 通过使 KV 头数少于 Q 头数来减少 KV 缓存（减少 `n_heads / n_kv_heads` 倍）。MLA 通过缓存低秩 KV 潜在表示（`kv_lora_rank`）和 RoPE 键（`n_heads × qk_rope_head_dim`），然后即时重建完整的 K 和 V，实现更大幅度的缩减。在生产规模下，MLA 的 KV 缓存大约比标准注意力小 10-20 倍。
 
-### MoE FFN fields
+### MoE FFN 字段
 
-The Mixture-of-Experts FFN is used exclusively inside the Recurrent Block. Prelude and Coda use a dense SwiGLU FFN.
+混合专家 FFN 仅在递归块内部使用。前奏和尾声使用密集 SwiGLU FFN。
 
-| Field | Type | Default | Description |
+| 字段 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
-| `n_experts` | `int` | `64` | Total number of routed expert FFNs |
-| `n_shared_experts` | `int` | `2` | Always-active shared experts; absorb common cross-domain patterns |
-| `n_experts_per_tok` | `int` | `4` | Top-K routed experts selected per token by the router |
-| `expert_dim` | `int` | `512` | Hidden dimension inside each fine-grained routed expert |
+| `n_experts` | `int` | `64` | 路由专家 FFN 的总数 |
+| `n_shared_experts` | `int` | `2` | 始终激活的共享专家；吸收跨领域的通用模式 |
+| `n_experts_per_tok` | `int` | `4` | 路由器为每个 token 选择的 Top-K 路由专家数 |
+| `expert_dim` | `int` | `512` | 每个细粒度路由专家内部的隐藏维度 |
 
-Approximately `n_experts_per_tok / n_experts = 6.25%` of routed expert parameters are activated per token, plus all shared expert parameters.
+每个 token 大约激活 `n_experts_per_tok / n_experts = 6.25%` 的路由专家参数，加上所有共享专家参数。
 
-### Stability and adaptation fields
+### 稳定性和适配字段
 
-| Field | Type | Default | Description |
+| 字段 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
-| `act_threshold` | `float` | `0.99` | ACT cumulative halting threshold; loop exits per-position once this is exceeded |
-| `rope_theta` | `float` | `500000.0` | RoPE base frequency (LLaMA-3 default; higher = slower frequency decay over sequence positions) |
-| `lora_rank` | `int` | `16` | Rank of the depth-wise LoRA adapter applied inside each loop iteration |
+| `act_threshold` | `float` | `0.99` | ACT 累积停止阈值；当超过此值时，该位置退出循环 |
+| `rope_theta` | `float` | `500000.0` | RoPE 基础频率（LLaMA-3 默认值；越高 = 频率在序列位置上衰减越慢） |
+| `lora_rank` | `int` | `16` | 每次循环迭代中应用的深度级 LoRA 适配器的秩 |
 
 ---
 
-## Constructor
+## 构造函数
 
 ```python
 OpenMythos(cfg: MythosConfig)
 ```
 
-Builds all sub-modules, precomputes RoPE frequency buffers, and runs weight initialization.
+构建所有子模块，预计算 RoPE 频率缓冲区，并执行权重初始化。
 
-**What happens internally:**
+**内部执行流程：**
 
-1. `nn.Embedding(vocab_size, dim)` — token embedding table, weight-tied with the LM head.
-2. RoPE buffers — `freqs_cis` (for GQA, dim = `dim // n_heads`) and `freqs_cis_mla` (for MLA, dim = `qk_rope_head_dim`) are precomputed once and registered as non-parameter buffers. The correct buffer is selected at forward time based on `cfg.attn_type`.
-3. `prelude` — `nn.ModuleList` of `prelude_layers` `TransformerBlock` instances with dense SwiGLU FFN.
-4. `recurrent` — a single `RecurrentBlock` containing one `TransformerBlock` (with MoE FFN), `LTIInjection`, `ACTHalting`, and `LoRAAdapter`.
-5. `coda` — `nn.ModuleList` of `coda_layers` `TransformerBlock` instances with dense SwiGLU FFN.
-6. `RMSNorm(dim)` applied before the LM head.
-7. `nn.Linear(dim, vocab_size, bias=False)` LM head with weights tied to the embedding.
-8. All `nn.Linear` and `nn.Embedding` weights initialized from N(0, 0.02).
+1. `nn.Embedding(vocab_size, dim)` — token 嵌入表，与 LM 头权重绑定。
+2. RoPE 缓冲区 — `freqs_cis`（用于 GQA，dim = `dim // n_heads`）和 `freqs_cis_mla`（用于 MLA，dim = `qk_rope_head_dim`）预计算一次并注册为非参数缓冲区。前向传播时根据 `cfg.attn_type` 选择正确的缓冲区。
+3. `prelude` — 包含 `prelude_layers` 个 `TransformerBlock` 实例的 `nn.ModuleList`，使用密集 SwiGLU FFN。
+4. `recurrent` — 单个 `RecurrentBlock`，包含一个 `TransformerBlock`（使用 MoE FFN）、`LTIInjection`、`ACTHalting` 和 `LoRAAdapter`。
+5. `coda` — 包含 `coda_layers` 个 `TransformerBlock` 实例的 `nn.ModuleList`，使用密集 SwiGLU FFN。
+6. `RMSNorm(dim)` 在 LM 头之前应用。
+7. `nn.Linear(dim, vocab_size, bias=False)` LM 头，权重与嵌入层绑定。
+8. 所有 `nn.Linear` 和 `nn.Embedding` 权重从 N(0, 0.02) 初始化。
 
-**Example:**
+**示例：**
 
 ```python
 from open_mythos.main import OpenMythos, MythosConfig
@@ -123,7 +123,7 @@ cfg = MythosConfig(
     attn_type="mla",
 )
 model = OpenMythos(cfg)
-print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+print(f"参数量: {sum(p.numel() for p in model.parameters()):,}")
 ```
 
 ---
@@ -139,46 +139,46 @@ def forward(
 ) -> torch.Tensor
 ```
 
-Single forward pass through the full Prelude → Recurrent Block → Coda pipeline.
+通过完整的 前奏 → 递归块 → 尾声 流水线的单次前向传播。
 
-### Parameters
+### 参数
 
-| Parameter | Type | Description |
+| 参数 | 类型 | 描述 |
 |---|---|---|
-| `input_ids` | `Tensor (B, T)` | Batch of token index sequences. `B` = batch size, `T` = sequence length |
-| `n_loops` | `int \| None` | Recurrent loop depth for this call. Defaults to `cfg.max_loop_iters`. Pass a higher value at inference to extrapolate to harder problems (depth extrapolation property). |
-| `kv_cache` | `dict \| None` | If provided, keys and values are accumulated here for autoregressive decoding. Pass `{}` on the first decode step and reuse the same dict across steps. Pass `None` for training or full-context inference. |
+| `input_ids` | `Tensor (B, T)` | token 索引序列的批次。`B` = 批大小，`T` = 序列长度 |
+| `n_loops` | `int \| None` | 本次调用的递归循环深度。默认为 `cfg.max_loop_iters`。在推理时传入更大的值可外推到更难的问题（深度外推特性）。 |
+| `kv_cache` | `dict \| None` | 如果提供，键和值将在此处累积用于自回归解码。在第一个解码步骤传入 `{}`，并在各步骤间复用同一字典。训练或全上下文推理时传入 `None`。 |
 
-### Returns
+### 返回值
 
-`Tensor (B, T, vocab_size)` — raw (unnormalized) logits over the vocabulary for each position.
+`Tensor (B, T, vocab_size)` — 每个位置上词汇表的原始（未归一化）logits。
 
-### Behavior walkthrough
+### 行为详解
 
 ```
-1. Embed:     x = embedding(input_ids)              # (B, T, dim)
-2. Select RoPE buffer:
-     if attn_type == "mla": use freqs_cis_mla[:T]
-     else:                   use freqs_cis[:T]
-3. Build causal mask (upper-triangular -inf):
+1. 嵌入:     x = embedding(input_ids)              # (B, T, dim)
+2. 选择 RoPE 缓冲区:
+     if attn_type == "mla": 使用 freqs_cis_mla[:T]
+     else:                   使用 freqs_cis[:T]
+3. 构建因果掩码（上三角 -inf）:
      if T > 1: mask = _causal_mask(T, device)
-     else:     mask = None  (single-token decode step)
-4. Prelude:
+     else:     mask = None  （单 token 解码步骤）
+4. 前奏:
      for i, layer in prelude:
          x = layer(x, freqs_cis, mask, kv_cache, f"prelude_{i}")
-5. Freeze encoded input:
+5. 冻结编码输入:
      e = x                                          # (B, T, dim)
-6. Recurrent loop:
+6. 递归循环:
      x = recurrent(x, e, freqs_cis, mask, n_loops, kv_cache)
-7. Coda:
+7. 尾声:
      for i, layer in coda:
          x = layer(x, freqs_cis, mask, kv_cache, f"coda_{i}")
-8. Project:   logits = lm_head(norm(x))             # (B, T, vocab_size)
+8. 投影:   logits = lm_head(norm(x))             # (B, T, vocab_size)
 ```
 
-**Step 5 (freeze `e`)** is the key architectural invariant: the encoded input `e` is captured after the Prelude and injected at *every* loop iteration unchanged. This prevents the hidden state from drifting away from the original input signal regardless of loop depth.
+**步骤 5（冻结 `e`）**是关键的架构不变量：编码输入 `e` 在前奏之后被捕获，并在*每次*循环迭代中不变地注入。这防止了隐藏状态在任何循环深度下偏离原始输入信号。
 
-### Training example
+### 训练示例
 
 ```python
 import torch
@@ -199,12 +199,12 @@ loss.backward()
 optimizer.step()
 ```
 
-### Depth extrapolation at inference
+### 推理时深度外推
 
-A looped transformer trained on `N` loops can be evaluated on `N + k` loops and often achieves higher quality on hard multi-hop problems. Pass `n_loops` at inference time:
+在 `N` 次循环上训练的循环 Transformer 可以在 `N + k` 次循环上评估，通常在困难的多跳问题上获得更高质量。在推理时传入 `n_loops`：
 
 ```python
-# Trained with max_loop_iters=16 — try deeper reasoning at test time
+# 使用 max_loop_iters=16 训练 — 在测试时尝试更深的推理
 logits_deep = model(input_ids, n_loops=32)
 ```
 
@@ -224,29 +224,29 @@ def generate(
 ) -> torch.Tensor
 ```
 
-Autoregressive token generation with KV caching. Processes the full prompt on step 0, then decodes one token at a time using the accumulated cache.
+带 KV 缓存的自回归 token 生成。在步骤 0 处理完整提示，然后使用累积的缓存逐个 token 解码。
 
-### Parameters
+### 参数
 
-| Parameter | Type | Default | Description |
+| 参数 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
-| `input_ids` | `Tensor (B, T)` | — | Prompt token indices |
-| `max_new_tokens` | `int` | `64` | Number of new tokens to generate |
-| `n_loops` | `int` | `8` | Recurrent loop depth per decode step. Can be higher than the training value for harder prompts (depth extrapolation) |
-| `temperature` | `float` | `1.0` | Softmax temperature applied to logits before sampling. Values < 1 make the distribution more peaked (less random); values > 1 make it flatter |
-| `top_k` | `int` | `50` | Restricts sampling to the top-K most probable tokens at each step. `0` disables filtering (full vocabulary sampling) |
+| `input_ids` | `Tensor (B, T)` | — | 提示 token 索引 |
+| `max_new_tokens` | `int` | `64` | 要生成的新 token 数量 |
+| `n_loops` | `int` | `8` | 每个解码步骤的递归循环深度。对于更难的提示可以高于训练值（深度外推） |
+| `temperature` | `float` | `1.0` | 采样前应用于 logits 的 softmax 温度。值 < 1 使分布更尖锐（更少随机）；值 > 1 使分布更平坦 |
+| `top_k` | `int` | `50` | 将每步采样限制在概率最高的 Top-K 个 token。`0` 禁用过滤（全词汇表采样） |
 
-### Returns
+### 返回值
 
-`Tensor (B, T + max_new_tokens)` — the original prompt concatenated with the generated token indices.
+`Tensor (B, T + max_new_tokens)` — 原始提示与生成的 token 索引拼接。
 
-### KV caching mechanism
+### KV 缓存机制
 
-On step 0, the full prompt `(B, T)` is passed and all keys/values for every layer are populated in `kv_cache`. On steps 1…N only the single most recent token `(B, 1)` is passed; the attention layers read back all prior K/V from the cache. This makes decode cost proportional to a single token per step rather than the full growing sequence.
+在步骤 0，完整提示 `(B, T)` 被传入，所有层的键/值都填充到 `kv_cache` 中。在步骤 1…N 中，只传入最近的单个 token `(B, 1)`；注意力层从缓存中读取所有先前的 K/V。这使得解码成本与每步单个 token 成正比，而非与不断增长的完整序列成正比。
 
-Each layer caches under a deterministic string key (`"prelude_0"`, `"recurrent_loop_3"`, `"coda_1"`, etc.), so caches from different layers never collide.
+每层使用确定性字符串键进行缓存（`"prelude_0"`、`"recurrent_loop_3"`、`"coda_1"` 等），因此不同层的缓存永远不会冲突。
 
-### Sampling strategy
+### 采样策略
 
 ```
 logits = forward(cur_ids, n_loops, kv_cache)[:, -1, :] / temperature
@@ -259,7 +259,7 @@ probs    = softmax(logits)
 next_tok = multinomial(probs, num_samples=1)
 ```
 
-### Generation example
+### 生成示例
 
 ```python
 import torch
@@ -267,13 +267,13 @@ from open_mythos.main import OpenMythos, MythosConfig
 
 model = OpenMythos(MythosConfig()).eval()
 
-# Tokenized prompt (use your tokenizer of choice)
+# 分词后的提示（使用你选择的分词器）
 prompt = torch.tensor([[1, 450, 3118, 310, 278]])   # (1, 5)
 
 output = model.generate(
     prompt,
     max_new_tokens=128,
-    n_loops=16,        # deeper reasoning
+    n_loops=16,        # 更深的推理
     temperature=0.8,
     top_k=40,
 )
@@ -282,126 +282,126 @@ output = model.generate(
 
 ---
 
-## Internal Components
+## 内部组件
 
-The following sub-modules are assembled inside `OpenMythos`. They are not typically called directly but understanding them clarifies the model's behavior.
+以下子模块在 `OpenMythos` 内部组装。通常不直接调用，但理解它们有助于澄清模型的行为。
 
 ### `RecurrentBlock`
 
-The heart of the architecture. A single `TransformerBlock` (with MoE FFN) is run in a loop for up to `n_loops` iterations, with the following per-iteration pipeline:
+架构的核心。单个 `TransformerBlock`（使用 MoE FFN）在循环中运行最多 `n_loops` 次迭代，每次迭代的流水线如下：
 
 ```
-h_loop = loop_index_embedding(h, t, loop_dim)   # inject sinusoidal loop-index signal
-combined = RMSNorm(h_loop + e)                   # add frozen encoded input
-trans_out = TransformerBlock(combined, ...)       # attention + MoE FFN
-trans_out = trans_out + LoRAAdapter(trans_out, t) # depth-wise LoRA delta
-h = LTIInjection(h, e, trans_out)               # stable update: A·h + B·e + trans_out
-p = ACTHalting(h)                                # per-position halting probability
+h_loop = loop_index_embedding(h, t, loop_dim)   # 注入正弦循环索引信号
+combined = RMSNorm(h_loop + e)                   # 加上冻结的编码输入
+trans_out = TransformerBlock(combined, ...)       # 注意力 + MoE FFN
+trans_out = trans_out + LoRAAdapter(trans_out, t) # 深度级 LoRA 增量
+h = LTIInjection(h, e, trans_out)               # 稳定更新: A·h + B·e + trans_out
+p = ACTHalting(h)                                # 每位置停止概率
 ```
 
-The loop exits early for positions whose cumulative halting probability exceeds `cfg.act_threshold`. If all positions have halted, the loop exits before `n_loops`. The final output is an ACT-weighted sum of `h` across iterations.
+当某位置的累积停止概率超过 `cfg.act_threshold` 时，该位置提前退出循环。如果所有位置都已停止，循环在 `n_loops` 之前退出。最终输出是 `h` 在各迭代间的 ACT 加权和。
 
 ### `LTIInjection`
 
-Implements the stable recurrent update rule `h_{t+1} = A·h_t + B·e + transformer_out`. The diagonal matrix `A` is parameterized as:
+实现稳定的递归更新规则 `h_{t+1} = A·h_t + B·e + transformer_out`。对角矩阵 `A` 的参数化方式：
 
 ```
-A_continuous = Diag(-exp(log_A))     # always negative diagonal
-A_discrete   = exp(Δt · A_continuous) # ZOH discretization, values ∈ (0, 1)
+A_continuous = Diag(-exp(log_A))     # 始终为负对角
+A_discrete   = exp(Δt · A_continuous) # ZOH 离散化，值 ∈ (0, 1)
 ```
 
-This guarantees spectral radius `ρ(A) < 1` by construction, making the looped model unconditionally stable regardless of learning rate or batch noise. See [Parcae (Prairie et al., 2026)](https://arxiv.org/abs/2604.12946) for the theoretical foundation.
+这从构造上保证谱半径 `ρ(A) < 1`，使循环模型无条件稳定，不受学习率或批次噪声影响。理论基础见 [Parcae (Prairie et al., 2026)](https://arxiv.org/abs/2604.12946)。
 
 ### `ACTHalting`
 
-A single linear layer mapping `(B, T, dim) → (B, T)` followed by sigmoid. At each loop step, the scalar halting probability per position is accumulated. When the cumulative sum exceeds `cfg.act_threshold`, the ACT remainder trick assigns the remaining probability mass as the final weight and the position stops contributing. Implements Graves (2016) ACT.
+单个线性层将 `(B, T, dim) → (B, T)` 映射后接 sigmoid。在每个循环步骤中，每位置的标量停止概率被累积。当累积和超过 `cfg.act_threshold` 时，ACT 余量技巧将剩余概率质量分配为最终权重，该位置停止贡献。实现了 Graves (2016) ACT。
 
 ### `LoRAAdapter`
 
-A depth-wise low-rank adapter with three components:
+深度级低秩适配器，包含三个组件：
 
-- `down`: shared `Linear(dim, rank)` — down-projects the transformer output
-- `B`: shared parameter matrix `(rank, dim)` — up-projects back to full dimension
-- `scale`: `Embedding(max_loops, rank)` — per-loop element-wise scale
+- `down`：共享的 `Linear(dim, rank)` — 将 Transformer 输出降维
+- `B`：共享参数矩阵 `(rank, dim)` — 升维回完整维度
+- `scale`：`Embedding(max_loops, rank)` — 每循环的逐元素缩放
 
-The delta per iteration is `(down(x) * scale[t]) @ B`. Bridges the expressiveness gap between pure weight-tying and fully distinct per-layer weights. Based on [Relaxed Recursive Transformers (Bae et al., 2024)](https://arxiv.org/pdf/2410.20672).
+每次迭代的增量为 `(down(x) * scale[t]) @ B`。弥合了纯权重绑定和完全独立逐层权重之间的表达能力差距。基于 [松弛递归 Transformer (Bae et al., 2024)](https://arxiv.org/pdf/2410.20672)。
 
 ### `TransformerBlock`
 
-Pre-norm transformer block with swappable attention and FFN:
+预归一化 Transformer 块，支持可切换的注意力和 FFN：
 
-- **Attention:** `MLAttention` (MLA) or `GQAttention` (GQA), selected by `cfg.attn_type`
-- **FFN:** `MoEFFN` (when `use_moe=True`, inside `RecurrentBlock`) or dense `Expert` (Prelude, Coda)
-- Pre-norm via `RMSNorm` applied to both the attention input and FFN input
+- **注意力：** `MLAttention`（MLA）或 `GQAttention`（GQA），由 `cfg.attn_type` 选择
+- **FFN：** `MoEFFN`（当 `use_moe=True` 时，在 `RecurrentBlock` 内部）或密集 `Expert`（前奏、尾声）
+- 通过 `RMSNorm` 对注意力输入和 FFN 输入进行预归一化
 
 ### `MLAttention`
 
-Multi-Latent Attention ([DeepSeek-V2, 2024](https://arxiv.org/abs/2405.04434)). The cache stores only the compressed KV latent `c_kv` (rank `kv_lora_rank`) plus the RoPE-encoded keys. At each decode step, `K_nope` and `V` are cheaply reconstructed from `c_kv` via a shared up-projection, trading a fast linear multiply for dramatically smaller KV memory footprint.
+多潜在注意力（[DeepSeek-V2, 2024](https://arxiv.org/abs/2405.04434)）。缓存仅存储压缩的 KV 潜在表示 `c_kv`（秩 `kv_lora_rank`）加上 RoPE 编码的键。在每个解码步骤中，`K_nope` 和 `V` 通过共享的上投影从 `c_kv` 廉价重建，用快速线性乘法换取显著更小的 KV 内存占用。
 
-Cache size per layer per token: `kv_lora_rank + n_heads × qk_rope_head_dim` vs. full GQA cache of `n_kv_heads × head_dim × 2`.
+每层每 token 的缓存大小：`kv_lora_rank + n_heads × qk_rope_head_dim`，对比完整 GQA 缓存的 `n_kv_heads × head_dim × 2`。
 
 ### `GQAttention`
 
-Grouped Query Attention ([Ainslie et al., 2023](https://arxiv.org/abs/2305.13245)). `n_kv_heads` KV pairs are shared across `n_heads // n_kv_heads` query heads each, reducing KV cache by that factor while preserving full query expressiveness.
+分组查询注意力（[Ainslie et al., 2023](https://arxiv.org/abs/2305.13245)）。`n_kv_heads` 个 KV 对在每 `n_heads // n_kv_heads` 个查询头之间共享，在保持完整查询表达能力的同时按该因子减少 KV 缓存。
 
 ### `MoEFFN`
 
-Fine-grained Mixture-of-Experts FFN ([DeepSeekMoE, Dai et al., 2024](https://arxiv.org/abs/2401.06066)):
+细粒度混合专家 FFN（[DeepSeekMoE, Dai et al., 2024](https://arxiv.org/abs/2401.06066)）：
 
-- **Routed experts:** `n_experts` small SwiGLU FFNs. Each token's router selects the top-`n_experts_per_tok` via softmax over learned logits. A per-expert bias `router_bias` (non-gradient, updated externally) keeps load balanced.
-- **Shared experts:** `n_shared_experts` always-active FFNs with width `expert_dim × n_experts_per_tok`, absorbing cross-domain patterns.
+- **路由专家：** `n_experts` 个小型 SwiGLU FFN。每个 token 的路由器通过对学习的 logits 进行 softmax 选择 top-`n_experts_per_tok` 个。每专家偏置 `router_bias`（无梯度，外部更新）保持负载均衡。
+- **共享专家：** `n_shared_experts` 个始终激活的 FFN，宽度为 `expert_dim × n_experts_per_tok`，吸收跨领域模式。
 
-Total activated parameters per token: `(n_experts_per_tok / n_experts)` of routed capacity + all shared capacity.
+每 token 激活的总参数：路由容量的 `(n_experts_per_tok / n_experts)` + 所有共享容量。
 
 ### `Expert`
 
-Single SwiGLU feed-forward unit: `down(silu(gate(x)) * up(x))`. Used both as individual routed experts inside `MoEFFN` and as the dense FFN in Prelude/Coda blocks.
+单个 SwiGLU 前馈单元：`down(silu(gate(x)) * up(x))`。既用作 `MoEFFN` 内部的单个路由专家，也用作前奏/尾声块中的密集 FFN。
 
 ### `RMSNorm`
 
-Root Mean Square Layer Normalization ([Zhang & Sennrich, 2019](https://arxiv.org/abs/1910.07467)). Normalizes by `x / rms(x)` with a learned per-channel rescaling weight. No bias, no mean subtraction. Used throughout in place of standard LayerNorm.
+均方根层归一化（[Zhang & Sennrich, 2019](https://arxiv.org/abs/1910.07467)）。通过 `x / rms(x)` 归一化，带有可学习的逐通道缩放权重。无偏置，无均值减除。在整个模型中替代标准 LayerNorm 使用。
 
 ---
 
-## Utility functions
+## 工具函数
 
 ### `precompute_rope_freqs(dim, max_len, theta)`
 
-Precomputes complex-valued RoPE rotation matrices as a `(max_len, dim//2)` complex64 tensor. Called once in `__init__` and stored as a buffer.
+预计算复数值 RoPE 旋转矩阵，作为 `(max_len, dim//2)` 的 complex64 张量。在 `__init__` 中调用一次并存储为缓冲区。
 
 ### `apply_rope(x, freqs_cis)`
 
-Applies precomputed RoPE frequencies to a query or key tensor by treating adjacent feature pairs as complex numbers and multiplying pointwise by the positional phasor.
+将预计算的 RoPE 频率应用于查询或键张量，方法是将相邻特征对视为复数，并与位置相量逐点相乘。
 
 ### `loop_index_embedding(h, loop_t, loop_dim, theta)`
 
-Injects a sinusoidal loop-index signal into the first `loop_dim` channels of the hidden state, analogous to RoPE but over recurrence depth rather than sequence position. Allows the shared recurrent block weights to behave differently at different loop iterations.
+将正弦循环索引信号注入隐藏状态的前 `loop_dim` 个通道，类似于 RoPE 但作用于递归深度而非序列位置。允许共享的递归块权重在不同循环迭代中表现不同。
 
 ---
 
-## Key design properties
+## 关键设计特性
 
-| Property | Mechanism | Benefit |
+| 特性 | 机制 | 优势 |
 |---|---|---|
-| Depth extrapolation | Recurrent block with looped identical weights | Train on N loops, test on N+k — harder problems solved without retraining |
-| Parameter efficiency | Weight sharing across all loop iterations | k-layer model achieves quality of kL-layer model; parameters ≈ k, compute ∝ L |
-| Adaptive compute | ACT halting per position | Easy tokens exit early; hard tokens receive full loop depth — within the same batch |
-| Stable training | LTI injection with ZOH-constrained A (ρ(A) < 1) | No residual explosion; robust to high learning rates |
-| Domain breadth | MoE FFN in recurrent block | Different expert subsets can be routed to at each loop depth |
-| Loop differentiation | Loop-index sinusoidal embedding | Same weights implement functionally distinct phases per iteration |
-| Efficient KV memory | MLA (default) or GQA | MLA: 10–20× smaller cache vs standard attention at production scale |
-| Depth-wise adaptation | LoRA adapter per loop iteration | Expressiveness beyond pure weight-tying; minimal parameter overhead |
+| 深度外推 | 使用循环相同权重的递归块 | 在 N 次循环上训练，在 N+k 上测试——无需重新训练即可解决更难的问题 |
+| 参数效率 | 所有循环迭代间的权重共享 | k 层模型达到 kL 层模型的质量；参数 ≈ k，计算 ∝ L |
+| 自适应计算 | 每位置 ACT 停止 | 简单 token 提前退出；困难 token 获得完整循环深度——在同一批次内 |
+| 稳定训练 | ZOH 约束 A 的 LTI 注入（ρ(A) < 1） | 无残差爆炸；对高学习率鲁棒 |
+| 领域广度 | 递归块中的 MoE FFN | 每个循环深度可路由到不同的专家子集 |
+| 循环区分 | 循环索引正弦嵌入 | 相同权重在每次迭代中实现功能上不同的阶段 |
+| 高效 KV 内存 | MLA（默认）或 GQA | MLA：在生产规模下比标准注意力小 10-20 倍的缓存 |
+| 深度级适配 | 每循环迭代的 LoRA 适配器 | 超越纯权重绑定的表达能力；最小参数开销 |
 
 ---
 
-## Full configuration reference
+## 完整配置参考
 
-The default `MythosConfig()` targets a mid-scale research model. Below is a minimal configuration for quick experimentation:
+默认的 `MythosConfig()` 面向中等规模的研究模型。以下是用于快速实验的最小配置：
 
 ```python
 from open_mythos.main import OpenMythos, MythosConfig
 
-# Minimal config for fast iteration / unit testing
+# 用于快速迭代/单元测试的最小配置
 small_cfg = MythosConfig(
     vocab_size=8192,
     dim=256,
@@ -421,10 +421,10 @@ small_cfg = MythosConfig(
 model = OpenMythos(small_cfg)
 ```
 
-And a production-oriented MLA configuration matching the default hyperparameters:
+以及匹配默认超参数的面向生产的 MLA 配置：
 
 ```python
-# Default MLA config (matches MythosConfig() defaults)
+# 默认 MLA 配置（匹配 MythosConfig() 默认值）
 prod_cfg = MythosConfig(
     vocab_size=32000,
     dim=2048,
@@ -434,7 +434,7 @@ prod_cfg = MythosConfig(
     max_loop_iters=16,
     prelude_layers=2,
     coda_layers=2,
-    attn_type="mla",           # Multi-Latent Attention
+    attn_type="mla",           # 多潜在注意力
     kv_lora_rank=512,
     q_lora_rank=1536,
     qk_rope_head_dim=64,
@@ -453,19 +453,18 @@ model = OpenMythos(prod_cfg)
 
 ---
 
-## References
+## 参考文献
 
-| Component | Paper |
+| 组件 | 论文 |
 |---|---|
-| Recurrent-Depth Transformer | [Loop, Think, & Generalize (2025)](https://arxiv.org/pdf/2604.07822) |
-| LTI-stable injection (Parcae) | [Scaling Laws for Stable Looped Language Models (Prairie et al., 2026)](https://arxiv.org/abs/2604.12946) |
-| Looped transformer reasoning | [Reasoning with Latent Thoughts (Saunshi et al., 2025)](https://arxiv.org/abs/2502.17416) |
-| Multi-Latent Attention | [DeepSeek-V2 (2024)](https://arxiv.org/abs/2405.04434) |
-| Grouped Query Attention | [Ainslie et al., 2023](https://arxiv.org/abs/2305.13245) |
-| Mixture-of-Experts FFN | [DeepSeekMoE (Dai et al., 2024)](https://arxiv.org/abs/2401.06066) |
-| Adaptive Computation Time | [Graves, 2016](https://arxiv.org/abs/1603.08983) |
-| Depth-wise LoRA | [Relaxed Recursive Transformers (Bae et al., 2024)](https://arxiv.org/pdf/2410.20672) |
+| 递归深度 Transformer | [循环、思考与泛化 (2025)](https://arxiv.org/pdf/2604.07822) |
+| LTI 稳定注入（Parcae） | [稳定循环语言模型的缩放定律 (Prairie et al., 2026)](https://arxiv.org/abs/2604.12946) |
+| 循环 Transformer 推理 | [用潜在思维推理 (Saunshi et al., 2025)](https://arxiv.org/abs/2502.17416) |
+| 多潜在注意力 | [DeepSeek-V2 (2024)](https://arxiv.org/abs/2405.04434) |
+| 分组查询注意力 | [Ainslie et al., 2023](https://arxiv.org/abs/2305.13245) |
+| 混合专家 FFN | [DeepSeekMoE (Dai et al., 2024)](https://arxiv.org/abs/2401.06066) |
+| 自适应计算时间 | [Graves, 2016](https://arxiv.org/abs/1603.08983) |
+| 深度级 LoRA | [松弛递归 Transformer (Bae et al., 2024)](https://arxiv.org/pdf/2410.20672) |
 | RMSNorm | [Zhang & Sennrich, 2019](https://arxiv.org/abs/1910.07467) |
 | RoPE | [Su et al., 2021](https://arxiv.org/abs/2104.09864) |
-| Universal Transformer (ACT basis) | [Dehghani et al., 2018](https://arxiv.org/pdf/1807.03819) |
-| Continuous latent reasoning | [COCONUT (2024)](https://arxiv.org/abs/2412.06769) |
+| Flash Attention 2 | [Dao, 2023](https://arxiv.org/abs/2307.08691) |

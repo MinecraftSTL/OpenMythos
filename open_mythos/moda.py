@@ -1,47 +1,46 @@
 """
-Mixture-of-Depths Attention (MoDA) + DeepSeek Mixture-of-Experts FFN
+混合深度注意力 (MoDA) + DeepSeek 混合专家 FFN
 ======================================================================
-Paper (attention):   "Mixture-of-Depths Attention"   arXiv 2603.15619
-Paper (MoE):         "DeepSeekMoE: Towards Ultimate Expert Specialization
-                      in Mixture-of-Experts Language Models" arXiv 2401.06066
-Reference impl (V3): https://github.com/deepseek-ai/DeepSeek-V3
+论文（注意力）:   "Mixture-of-Depths Attention"   arXiv 2603.15619
+论文（MoE）:     "DeepSeekMoE: Towards Ultimate Expert Specialization
+                  in Mixture-of-Experts Language Models" arXiv 2401.06066
+参考实现 (V3):   https://github.com/deepseek-ai/DeepSeek-V3
 
-Architecture
-------------
-This file fuses two independent architectural improvements:
+架构
+----
+本文件融合了两项独立的架构改进:
 
-  1. **MoDA** — each attention head jointly attends to current-layer sequence
-     KV pairs (causal) *and* depth KV pairs from all preceding layers at the
-     same token position, under a single softmax.
+  1. **MoDA** — 每个注意力头在单个 softmax 下同时关注当前层的序列
+     KV 对（因果）*以及*来自所有前序层在相同 token 位置的深度 KV 对。
 
-  2. **DeepSeek MoE** (replaces the dense SwiGLU FFN in every block):
-       * K_s  *shared experts* — always activated, capture common knowledge.
-       * N_r  *routed experts* — sparse; top-K activated per token.
-       * Fine-grained expert segmentation: each expert has a small hidden dim
-         (≈ dense_hidden / m) so that activating more experts keeps FLOPs
-         constant while improving specialisation.
-       * Expert-level balance loss prevents routing collapse.
+  2. **DeepSeek MoE**（替换每个块中的密集 SwiGLU FFN）:
+       * K_s 个*共享专家* — 始终激活，捕获通用知识。
+       * N_r 个*路由专家* — 稀疏；每 token 激活 Top-K 个。
+       * 细粒度专家分割：每个专家具有较小的隐藏维度
+         (≈ dense_hidden / m)，使激活更多专家时 FLOPs 保持不变，
+         同时提高专业化程度。
+       * 专家级负载均衡损失防止路由崩溃。
 
-Gate routing (faithful to DeepSeek-V3 model.py)
-------------------------------------------------
-  scores       = softmax(x W^T)          # or sigmoid for V3 style
-  original     = scores                  # saved for weight computation
-  [optional]   scores += bias            # V3 aux-loss-free routing
-  [optional]   group-limited masking     # V3 device-group routing
+门控路由（忠实于 DeepSeek-V3 model.py）
+----------------------------------------
+  scores       = softmax(x W^T)          # 或 V3 风格的 sigmoid
+  original     = scores                  # 保存用于权重计算
+  [可选]       scores += bias            # V3 无辅助损失路由
+  [可选]       分组限制掩码             # V3 设备组路由
   indices      = topk(scores, K)
-  weights      = original[indices]       # un-biased original scores
-  [sigmoid]    weights /= sum(weights)   # re-normalise for sigmoid gating
+  weights      = original[indices]       # 无偏的原始分数
+  [sigmoid]    weights /= sum(weights)   # sigmoid 门控的重新归一化
   weights     *= route_scale
 
-Balance loss (DeepSeekMoE §3.3, used when training without V3 bias routing)
+负载均衡损失（DeepSeekMoE §3.3，在不使用 V3 偏置路由训练时使用）
   L_ExpBal = Σ_i  f_i · P_i
-  f_i = (N_r / (K · T)) · #{tokens routing to i}   (normalised frequency)
-  P_i = (1/T) Σ_t s_{i,t}                          (mean soft gate score)
+  f_i = (N_r / (K · T)) · #{路由到 i 的 token 数}   （归一化频率）
+  P_i = (1/T) Σ_t s_{i,t}                            （平均软门控分数）
 
-Memory note
------------
-MoDA's unified attention has O(T·L) combined KV length.  For long sequences
-use the Triton kernel from https://github.com/hustvl/MoDA.
+内存说明
+--------
+MoDA 的统一注意力具有 O(T·L) 的组合 KV 长度。对于长序列
+请使用 https://github.com/hustvl/MoDA 的 Triton 内核。
 """
 
 from __future__ import annotations
@@ -57,46 +56,44 @@ import torch.nn.functional as F
 
 @dataclass
 class MoDAConfig:
-    """Configuration for a MoDA + DeepSeek-MoE decoder-only language model.
+    """MoDA + DeepSeek-MoE 纯解码器语言模型的配置。
 
-    Attention (MoDA)
-    ----------------
-    vocab_size:        Vocabulary size.
-    d_model:           Hidden dimension (must equal n_heads_q * head_dim).
-    n_layers:          Number of transformer layers.
-    n_heads_q:         Query heads.
-    n_heads_kv:        Key/value heads for GQA (must divide n_heads_q).
-    head_dim:          Per-head dimension (usually d_model // n_heads_q).
-    max_seq_len:       Maximum sequence length for the RoPE cache.
-    rope_base:         RoPE frequency base.
-    attn_dropout:      Attention dropout (0 for inference).
-    norm_eps:          RMSNorm epsilon.
+    注意力 (MoDA)
+    -------------
+    vocab_size:        词汇表大小。
+    d_model:           隐藏维度（必须等于 n_heads_q * head_dim）。
+    n_layers:          Transformer 层数。
+    n_heads_q:         查询头数。
+    n_heads_kv:        GQA 的键/值头数（必须整除 n_heads_q）。
+    head_dim:          每头维度（通常为 d_model // n_heads_q）。
+    max_seq_len:       RoPE 缓存的最大序列长度。
+    rope_base:         RoPE 频率基数。
+    attn_dropout:      注意力 dropout（推理时为 0）。
+    norm_eps:          RMSNorm epsilon。
 
-    MoE FFN (DeepSeekMoE / DeepSeek-V3 style)
+    MoE FFN（DeepSeekMoE / DeepSeek-V3 风格）
     ------------------------------------------
-    n_shared_experts:     Always-active shared experts (K_s).  Capture common
-                          knowledge; excluded from routing and balance loss.
-    n_routed_experts:     Total pool of routed experts (N_r).
-    n_activated_experts:  Top-K selected from routed experts per token (K').
-    expert_hidden_dim:    Per-expert intermediate dimension.
-                          Set to  dense_ffn_hidden / m  where m is the
-                          fine-grained segmentation factor so that total
-                          activated FLOPs match a dense FFN:
+    n_shared_experts:     始终激活的共享专家数 (K_s)。捕获通用知识；
+                          不参与路由和负载均衡损失。
+    n_routed_experts:     路由专家总池 (N_r)。
+    n_activated_experts:  每 token 从路由专家中选择的 Top-K 数 (K')。
+    expert_hidden_dim:    每专家中间维度。
+                          设为 dense_ffn_hidden / m，其中 m 为细粒度
+                          分割因子，使总激活 FLOPs 匹配密集 FFN:
                           (n_shared + n_activated) × expert_hidden ≈ dense_hidden
-    moe_balance_alpha:    Weight of the expert-level balance loss.  Set to
-                          0.0 to disable (e.g. when using V3 bias routing).
-    moe_score_func:       "softmax" (DeepSeekMoE / V2) or "sigmoid" (V3).
-    moe_n_groups:         Number of expert groups for group-limited routing
-                          (V3 uses 8; set 1 to disable, default).
-    moe_topk_groups:      Number of groups a token may route to
-                          (V3 uses 3; set 1 to disable, default).
-    moe_route_scale:      Scalar multiplied onto the selected gate weights
-                          after normalisation (V3 uses 2.5446; default 1.0).
+    moe_balance_alpha:    专家级负载均衡损失权重。设为 0.0 禁用
+                          （例如使用 V3 偏置路由时）。
+    moe_score_func:       "softmax"（DeepSeekMoE / V2）或 "sigmoid"（V3）。
+    moe_n_groups:         分组限制路由的专家组数
+                          （V3 使用 8；设为 1 禁用，默认值）。
+    moe_topk_groups:      每 token 可路由到的组数
+                          （V3 使用 3；设为 1 禁用，默认值）。
+    moe_route_scale:      归一化后乘以所选门控权重的标量
+                          （V3 使用 2.5446；默认 1.0）。
 
-    Defaults approximate the DeepSeekMoE 2B configuration scaled to
-    d_model = 2048, keeping per-token FLOPs equal to a dense SwiGLU with
-    hidden_dim = 5 632  (≈ 8/3 × 2048):
-        (n_shared + n_activated) × expert_hidden = (2+6) × 704 = 5 632.
+    默认值近似 DeepSeekMoE 2B 配置，缩放到 d_model = 2048，
+    保持每 token FLOPs 等于隐藏维度为 5 632（≈ 8/3 × 2048）的密集 SwiGLU:
+        (n_shared + n_activated) × expert_hidden = (2+6) × 704 = 5 632。
     """
 
     # ---- Transformer / MoDA ----
@@ -114,69 +111,68 @@ class MoDAConfig:
     # ---- DeepSeek MoE FFN ----
     n_shared_experts: int = 2  # K_s
     n_routed_experts: int = 64  # N_r
-    n_activated_experts: int = 6  # K' top-K from routed pool
-    expert_hidden_dim: int = 704  # per-expert intermediate dim
-    moe_balance_alpha: float = 0.001  # balance-loss weight (0 = disabled)
+    n_activated_experts: int = 6  # K' 从路由池中选择的 Top-K
+    expert_hidden_dim: int = 704  # 每专家中间维度
+    moe_balance_alpha: float = 0.001  # 负载均衡损失权重（0 = 禁用）
     moe_score_func: str = "softmax"  # "softmax" | "sigmoid"
-    moe_n_groups: int = 1  # expert groups (1 = no grouping)
-    moe_topk_groups: int = 1  # groups to route into (1 = no limit)
-    moe_route_scale: float = 1.0  # gate-weight scale factor
+    moe_n_groups: int = 1  # 专家组数（1 = 不分组）
+    moe_topk_groups: int = 1  # 可路由到的组数（1 = 无限制）
+    moe_route_scale: float = 1.0  # 门控权重缩放因子
 
 
 # ---------------------------------------------------------------------------
-# Primitives
+# 基础组件
 # ---------------------------------------------------------------------------
 
 
 class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization (no bias, no mean subtraction)."""
+    """均方根层归一化（无偏置，无均值减法）。"""
 
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
-        """Create an RMSNorm layer.
+        """创建 RMSNorm 层。
 
-        Args:
-            dim: Feature dimension to normalise over (the last axis of input).
-            eps: Stability constant added before the reciprocal square-root to
-                 prevent division by zero when the RMS is near zero.
+        参数:
+            dim: 归一化的特征维度（输入的最后一个轴）。
+            eps: 在倒数平方根前添加的稳定性常数，
+                 防止 RMS 接近零时除以零。
         """
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalise *x* by its root-mean-square and apply a learnable scale.
+        """通过均方根归一化 *x* 并应用可学习缩放。
 
-        Args:
-            x: Input tensor of arbitrary shape ``[..., dim]``.
+        参数:
+            x: 任意形状 ``[..., dim]`` 的输入张量。
 
-        Returns:
-            Normalised tensor, same shape as *x*.
+        返回:
+            归一化后的张量，形状与 *x* 相同。
         """
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         return x * rms * self.weight
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE) with lazy cache extension.
+    """旋转位置编码 (RoPE)，带惰性缓存扩展。
 
-    Args:
-        dim:         Per-head dimension (head_dim).
-        max_seq_len: Initial cache size.
-        base:        Frequency base (default 10 000).
+    参数:
+        dim:         每头维度 (head_dim)。
+        max_seq_len: 初始缓存大小。
+        base:        频率基数（默认 10 000）。
     """
 
     def __init__(
         self, dim: int, max_seq_len: int = 8_192, base: float = 10_000.0
     ) -> None:
-        """Initialise RoPE and pre-compute the cos/sin cache.
+        """初始化 RoPE 并预计算 cos/sin 缓存。
 
-        Args:
-            dim:         Per-head dimension.  Must be even.
-            max_seq_len: Number of positions to cache on construction.  The
-                         cache doubles automatically when a longer sequence
-                         is encountered.
-            base:        Frequency base θ.  Higher values slow the rotation
-                         rate, extending effective context length.
+        参数:
+            dim:         每头维度。必须为偶数。
+            max_seq_len: 构造时缓存的位置数。当遇到更长序列时
+                         缓存自动翻倍。
+            base:        频率基数 θ。值越高旋转速率越慢，
+                         有效上下文长度越长。
         """
         super().__init__()
         self.dim = dim
@@ -185,13 +181,13 @@ class RotaryEmbedding(nn.Module):
         self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
-        """Pre-compute and register ``_cos`` / ``_sin`` buffers up to *seq_len*.
+        """预计算并注册 ``_cos`` / ``_sin`` 缓冲区，最多到 *seq_len*。
 
-        Called once at init and again (doubling capacity) whenever ``forward``
-        is asked for a sequence longer than the current cache.
+        在初始化时调用一次，当 ``forward`` 请求的序列长于当前缓存时
+        再次调用（容量翻倍）。
 
-        Args:
-            seq_len: Number of positions to pre-compute.
+        参数:
+            seq_len: 要预计算的位置数。
         """
         t = torch.arange(
             seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype
@@ -202,14 +198,14 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("_sin", emb.sin()[None, None], persistent=False)
 
     def forward(self, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return cached (cos, sin) tables for the first *seq_len* positions.
+        """返回前 *seq_len* 个位置的缓存 (cos, sin) 表。
 
-        Args:
-            seq_len: Number of positions required.
+        参数:
+            seq_len: 所需的位置数。
 
-        Returns:
-            Tuple of ``(cos, sin)``, each shaped ``[1, 1, seq_len, dim]``,
-            ready to broadcast with ``[B, H, T, dim]`` query / key tensors.
+        返回:
+            ``(cos, sin)`` 元组，每个形状为 ``[1, 1, seq_len, dim]``，
+            可广播到 ``[B, H, T, dim]`` 的查询/键张量。
         """
         if seq_len > self._cos.shape[2]:
             self._build_cache(seq_len * 2)
@@ -217,18 +213,17 @@ class RotaryEmbedding(nn.Module):
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Return *x* with its last dimension split and swapped with negation.
+    """返回 *x* 最后一维分半并取反交换的结果。
 
-    Given ``x = [x₁, x₂]`` (each half of the last dim), returns
-    ``[-x₂, x₁]``.  Combined with the cos/sin multiply in
-    :func:`apply_rotary_emb` this implements the 2-D rotation matrix
-    that defines RoPE.
+    给定 ``x = [x₁, x₂]``（最后一维的各半），返回
+    ``[-x₂, x₁]``。与 :func:`apply_rotary_emb` 中的 cos/sin 乘法
+    结合，实现定义 RoPE 的二维旋转矩阵。
 
-    Args:
-        x: Tensor with an even-sized last dimension.
+    参数:
+        x: 最后一维为偶数大小的张量。
 
-    Returns:
-        Rotated tensor with the same shape as *x*.
+    返回:
+        与 *x* 形状相同的旋转后张量。
     """
     half = x.shape[-1] // 2
     return torch.cat([-x[..., half:], x[..., :half]], dim=-1)
@@ -237,20 +232,18 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 def apply_rotary_emb(
     x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> torch.Tensor:
-    """Apply Rotary Position Embeddings in-place to query or key tensors.
+    """将旋转位置编码应用于查询或键张量。
 
-    Implements ``x_rot = x * cos + rotate_half(x) * sin``, which is
-    equivalent to multiplying each consecutive pair of dimensions by a
-    2-D rotation matrix whose angle depends on the sequence position and
-    the dimension's frequency.
+    实现 ``x_rot = x * cos + rotate_half(x) * sin``，等价于将每对
+    连续维度乘以一个二维旋转矩阵，其角度取决于序列位置和维度频率。
 
-    Args:
-        x:   Query or key tensor, shape ``[B, H, T, d]``.
-        cos: Pre-computed cosines, shape ``[1, 1, T, d]``.
-        sin: Pre-computed sines,   shape ``[1, 1, T, d]``.
+    参数:
+        x:   查询或键张量，形状 ``[B, H, T, d]``。
+        cos: 预计算的余弦值，形状 ``[1, 1, T, d]``。
+        sin: 预计算的正弦值，形状 ``[1, 1, T, d]``。
 
-    Returns:
-        Rotated tensor with the same shape and dtype as *x*.
+    返回:
+        与 *x* 形状和数据类型相同的旋转后张量。
     """
     return x * cos + _rotate_half(x) * sin
 
@@ -261,80 +254,78 @@ def apply_rotary_emb(
 
 
 class DeepSeekExpert(nn.Module):
-    """Single fine-grained SwiGLU expert.
+    """单个细粒度 SwiGLU 专家。
 
-    Faithful to DeepSeek-V3 ``Expert``:
+    忠实于 DeepSeek-V3 ``Expert``:
         output = w2( SiLU(w1(x)) ⊙ w3(x) )
 
-    where w1 is the gate projection, w3 the up-projection, w2 the
-    down-projection — identical to a SwiGLU FFN at smaller hidden dim.
+    其中 w1 是门控投影，w3 是上投影，w2 是下投影 —
+    与较小隐藏维度的 SwiGLU FFN 完全相同。
 
-    Args:
-        d_model:    Input / output dimension.
-        hidden_dim: Expert intermediate dimension (≪ dense FFN hidden_dim).
+    参数:
+        d_model:    输入/输出维度。
+        hidden_dim: 专家中间维度（远小于密集 FFN hidden_dim）。
     """
 
     def __init__(self, d_model: int, hidden_dim: int) -> None:
-        """Create a single fine-grained SwiGLU expert.
+        """创建单个细粒度 SwiGLU 专家。
 
-        Args:
-            d_model:    Token hidden dimension (input and output size).
-            hidden_dim: Expert intermediate dimension.  Typically much
-                        smaller than the dense FFN hidden dim — set to
-                        ``dense_hidden / m`` where *m* is the fine-grained
-                        segmentation factor so total activated FLOPs match
-                        the dense baseline.
+        参数:
+            d_model:    token 隐藏维度（输入和输出大小）。
+            hidden_dim: 专家中间维度。通常远小于密集 FFN 隐藏维度 —
+                        设为 ``dense_hidden / m``，其中 *m* 为细粒度
+                        分割因子，使总激活 FLOPs 匹配密集基线。
         """
         super().__init__()
-        self.w1 = nn.Linear(d_model, hidden_dim, bias=False)  # gate
-        self.w3 = nn.Linear(d_model, hidden_dim, bias=False)  # up
-        self.w2 = nn.Linear(hidden_dim, d_model, bias=False)  # down
+        self.w1 = nn.Linear(d_model, hidden_dim, bias=False)  # 门控
+        self.w3 = nn.Linear(d_model, hidden_dim, bias=False)  # 上投影
+        self.w2 = nn.Linear(hidden_dim, d_model, bias=False)  # 下投影
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute ``w2( SiLU(w1(x)) ⊙ w3(x) )``.
+        """计算 ``w2( SiLU(w1(x)) ⊙ w3(x) )``。
 
-        Args:
-            x: Token features assigned to this expert, shape
-               ``[num_assigned_tokens, d_model]``.
+        参数:
+            x: 分配给此专家的 token 特征，形状
+               ``[num_assigned_tokens, d_model]``。
 
-        Returns:
-            Expert output, shape ``[num_assigned_tokens, d_model]``.
+        返回:
+            专家输出，形状 ``[num_assigned_tokens, d_model]``。
         """
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 class DeepSeekGate(nn.Module):
-    """Token-to-expert routing gate.
+    """Token 到专家的路由门控。
 
-    Faithful to DeepSeek-V3 ``Gate`` (minus distributed sharding).
+    忠实于 DeepSeek-V3 ``Gate``（去除分布式分片）。
 
-    Routing algorithm
-    ~~~~~~~~~~~~~~~~~
-    1.  ``scores = softmax(x W^T)``  or  ``sigmoid(x W^T)``
-    2.  ``original_scores = scores``  (saved — will be used for gate weights)
-    3.  [optional] ``scores += bias``  (V3 aux-loss-free bias routing)
-    4.  [optional] Group-limited masking:
-            - reshape scores → [T, n_groups, experts_per_group]
-            - keep only top-``topk_groups`` groups per token
-            - mask the rest to −∞
-    5.  ``indices = topk(scores, K')``          (routing decision)
-    6.  ``weights = original_scores[indices]``  (un-biased weights)
-    7.  [sigmoid only] ``weights /= sum(weights)``  (re-normalise)
+    路由算法
+    ~~~~~~~~
+    1.  ``scores = softmax(x W^T)``  或  ``sigmoid(x W^T)``
+    2.  ``original_scores = scores``  （保存 — 将用于门控权重）
+    3.  [可选] ``scores += bias``  （V3 无辅助损失偏置路由）
+    4.  [可选] 分组限制掩码:
+            - 将 scores 重塑为 [T, n_groups, experts_per_group]
+            - 仅保留每 token 的 top-``topk_groups`` 个组
+            - 将其余掩码为 −∞
+    5.  ``indices = topk(scores, K')``          （路由决策）
+    6.  ``weights = original_scores[indices]``  （无偏权重）
+    7.  [仅 sigmoid] ``weights /= sum(weights)``  （重新归一化）
     8.  ``weights *= route_scale``
 
-    The ``original_scores`` (full distribution, before bias/masking) are also
-    returned so the MoE layer can compute the expert-level balance loss.
+    ``original_scores``（完整分布，偏置/掩码前）也会返回，
+    以便 MoE 层计算专家级负载均衡损失。
 
-    Args:
-        d_model:           Token hidden dimension.
-        n_routed_experts:  Total routed expert pool size (N_r).
-        n_activated:       Top-K experts to select (K').
-        score_func:        ``"softmax"`` or ``"sigmoid"``.
-        n_groups:          Number of expert groups (1 = disabled).
-        topk_groups:       Groups a token may route to (1 = disabled).
-        route_scale:       Scalar applied to final gate weights.
-        use_bias:          If True, add a learnable per-expert bias used only
-                           for the routing decision (V3 aux-loss-free scheme).
+    参数:
+        d_model:           token 隐藏维度。
+        n_routed_experts:  路由专家总池大小 (N_r)。
+        n_activated:       选择的 Top-K 专家数 (K')。
+        score_func:        ``"softmax"`` 或 ``"sigmoid"``。
+        n_groups:          专家组数（1 = 禁用）。
+        topk_groups:       每 token 可路由到的组数（1 = 禁用）。
+        route_scale:       应用于最终门控权重的标量。
+        use_bias:          若为 True，添加仅用于路由决策的可学习
+                           每专家偏置（V3 无辅助损失方案）。
     """
 
     def __init__(
@@ -348,26 +339,24 @@ class DeepSeekGate(nn.Module):
         route_scale: float = 1.0,
         use_bias: bool = False,
     ) -> None:
-        """Create the routing gate.
+        """创建路由门控。
 
-        Args:
-            d_model:          Token hidden dimension.
-            n_routed_experts: Total number of routed experts in the pool (N_r).
-            n_activated:      How many experts to select per token (K').
-            score_func:       Affinity function — ``"softmax"`` (original
-                              DeepSeekMoE / V2) or ``"sigmoid"`` (V3).
-            n_groups:         Number of expert groups for device-limited
-                              routing.  Set to 1 to disable (default).
-            topk_groups:      Number of groups each token may route into.
-                              Set to 1 to disable (default).
-            route_scale:      Scalar multiplied onto gate weights after
-                              optional sigmoid normalisation (V3 uses 2.5446;
-                              default 1.0 leaves weights unchanged).
-            use_bias:         If ``True``, initialise a learnable per-expert
-                              float32 bias added to routing scores only (not
-                              gate weights).  Enables the V3 aux-loss-free
-                              load-balancing scheme where the bias is adjusted
-                              outside the optimizer to track expert loads.
+        参数:
+            d_model:          token 隐藏维度。
+            n_routed_experts: 路由专家池中的专家总数 (N_r)。
+            n_activated:      每 token 选择的专家数 (K')。
+            score_func:       亲和函数 — ``"softmax"``（原始
+                              DeepSeekMoE / V2）或 ``"sigmoid"``（V3）。
+            n_groups:         设备限制路由的专家组数。
+                              设为 1 禁用（默认）。
+            topk_groups:      每 token 可路由到的组数。
+                              设为 1 禁用（默认）。
+            route_scale:      可选 sigmoid 归一化后乘以门控权重的标量
+                              （V3 使用 2.5446；默认 1.0 不改变权重）。
+            use_bias:         若为 ``True``，初始化仅添加到路由分数
+                              （非门控权重）的可学习每专家 float32 偏置。
+                              启用 V3 无辅助损失负载均衡方案，其中偏置
+                              在优化器外部通过监控专家负载来调整。
         """
         super().__init__()
         self.n_routed_experts = n_routed_experts
@@ -377,13 +366,13 @@ class DeepSeekGate(nn.Module):
         self.topk_groups = topk_groups
         self.route_scale = route_scale
 
-        # Gating projection: [N_r, D]
+        # 门控投影: [N_r, D]
         self.weight = nn.Parameter(torch.empty(n_routed_experts, d_model))
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-        # Optional per-expert routing bias (V3 aux-loss-free load balancing).
-        # Updated outside the optimizer by monitoring expert loads — not trained
-        # through the balance loss.  Initialised to zero.
+        # 可选的每专家路由偏置（V3 无辅助损失负载均衡）。
+        # 通过监控专家负载在优化器外部更新 — 不通过负载均衡损失训练。
+        # 初始化为零。
         self.bias: Optional[nn.Parameter] = (
             nn.Parameter(torch.zeros(n_routed_experts, dtype=torch.float32))
             if use_bias
@@ -393,18 +382,18 @@ class DeepSeekGate(nn.Module):
     def forward(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute routing weights and expert indices.
+        """计算路由权重和专家索引。
 
-        Args:
-            x: ``[num_tokens, d_model]`` (flattened B × T).
+        参数:
+            x: ``[num_tokens, d_model]``（展平的 B × T）。
 
-        Returns:
-            weights:        ``[num_tokens, K']``  gate weights (dtype = x.dtype).
-            indices:        ``[num_tokens, K']``  selected expert indices (int64).
-            original_scores: ``[num_tokens, N_r]``  full soft scores (float32),
-                             used by :class:`DeepSeekMoE` for the balance loss.
+        返回:
+            weights:        ``[num_tokens, K']``  门控权重（dtype = x.dtype）。
+            indices:        ``[num_tokens, K']``  选中的专家索引（int64）。
+            original_scores: ``[num_tokens, N_r]``  完整软分数（float32），
+                             由 :class:`DeepSeekMoE` 用于负载均衡损失。
         """
-        # Affinity logits
+        # 亲和 logits
         logits = F.linear(x, self.weight)  # [T, N_r]
 
         if self.score_func == "softmax":
@@ -412,34 +401,34 @@ class DeepSeekGate(nn.Module):
         else:  # sigmoid (V3)
             scores = logits.sigmoid().to(torch.float32)
 
-        original_scores = scores  # un-biased; used for weights + balance loss
+        original_scores = scores  # 无偏；用于权重 + 负载均衡损失
 
-        # Routing scores (may differ from original_scores if bias is active)
+        # 路由分数（如果偏置激活，可能与 original_scores 不同）
         routing = scores
         if self.bias is not None:
             routing = routing + self.bias
 
-        # Group-limited routing (V3 device-group constraint)
+        # 分组限制路由（V3 设备组约束）
         if self.n_groups > 1:
             # [T, n_groups, experts_per_group]
             g = routing.view(x.size(0), self.n_groups, -1)
             if self.bias is None:
                 group_scores = g.amax(dim=-1)  # [T, G]
             else:
-                # Top-2 sum per group (V3 heuristic)
+                # 每组 Top-2 求和（V3 启发式）
                 group_scores = g.topk(2, dim=-1)[0].sum(dim=-1)
             _, top_groups = group_scores.topk(self.topk_groups, dim=-1)  # [T, topk_g]
             mask = torch.ones(
                 x.size(0), self.n_groups, dtype=torch.bool, device=x.device
             ).scatter_(
                 1, top_groups, False
-            )  # True = masked out
+            )  # True = 被掩码
             routing = g.masked_fill(mask.unsqueeze(-1), float("-inf")).flatten(1)
 
-        # Top-K selection (on routing scores which may include bias / group mask)
+        # Top-K 选择（基于可能包含偏置/组掩码的路由分数）
         _, indices = routing.topk(self.n_activated, dim=-1)  # [T, K']
 
-        # Gate weights from original (un-biased) scores
+        # 门控权重来自原始（无偏）分数
         weights = original_scores.gather(1, indices)  # [T, K']
 
         if self.score_func == "sigmoid":
@@ -450,57 +439,57 @@ class DeepSeekGate(nn.Module):
 
 
 class DeepSeekMoE(nn.Module):
-    """DeepSeek Mixture-of-Experts layer — drop-in replacement for a dense FFN.
+    """DeepSeek 混合专家层 — 密集 FFN 的直接替代品。
 
-    Combines shared experts (always active) and routed experts (sparse top-K)
-    exactly as in DeepSeek-V3 ``MoE``, adapted for single-device training
-    (no ColumnParallel/RowParallel, no all_reduce).
+    组合共享专家（始终激活）和路由专家（稀疏 Top-K），
+    完全按照 DeepSeek-V3 ``MoE`` 实现，适配单设备训练
+    （无 ColumnParallel/RowParallel，无 all_reduce）。
 
-    Forward pass
-    ~~~~~~~~~~~~
+    前向传播
+    ~~~~~~~~
     ::
 
         x_flat = x.view(-1, D)                         # [B*T, D]
 
-        # Shared path (always executed)
+        # 共享路径（始终执行）
         z = shared_experts(x_flat)                     # [B*T, D]
 
-        # Routed path (sparse)
+        # 路由路径（稀疏）
         weights, indices, scores = gate(x_flat)        # [B*T, K'], [B*T, K'], [B*T, N_r]
         y = zeros_like(x_flat)
-        for each expert i:
-            toks = tokens that selected expert i
+        for 每个专家 i:
+            toks = 选择了专家 i 的 token
             y[toks] += experts[i](x_flat[toks]) * weights[toks, rank_of_i]
 
         output = (y + z).view(B, T, D)
 
-        # Training: expert-level balance loss (DeepSeekMoE §3.3)
+        # 训练时: 专家级负载均衡损失（DeepSeekMoE §3.3）
         L_ExpBal = Σ_i  f_i · P_i
-          f_i = (N_r / (K' · T)) · #{tokens → expert i}
+          f_i = (N_r / (K' · T)) · #{token → 专家 i}
           P_i = mean_t(scores_{t,i})
 
-    Args:
-        cfg: :class:`MoDAConfig` instance.
+    参数:
+        cfg: :class:`MoDAConfig` 实例。
     """
 
     def __init__(self, cfg: MoDAConfig) -> None:
-        """Build the MoE layer from a :class:`MoDAConfig`.
+        """从 :class:`MoDAConfig` 构建 MoE 层。
 
-        Constructs:
-          * ``shared_experts`` — one dense SwiGLU FFN with hidden dimension
-            ``n_shared_experts × expert_hidden_dim``.
-          * ``gate``           — :class:`DeepSeekGate` for top-K routing.
-          * ``experts``        — ``nn.ModuleList`` of ``n_routed_experts``
-            :class:`DeepSeekExpert` instances, each with ``expert_hidden_dim``
-            intermediate units.
+        构造:
+          * ``shared_experts`` — 一个隐藏维度为
+            ``n_shared_experts × expert_hidden_dim`` 的密集 SwiGLU FFN。
+          * ``gate``           — 用于 Top-K 路由的 :class:`DeepSeekGate`。
+          * ``experts``        — ``n_routed_experts`` 个
+            :class:`DeepSeekExpert` 实例的 ``nn.ModuleList``，
+            每个具有 ``expert_hidden_dim`` 个中间单元。
 
-        Args:
-            cfg: Model configuration.  The relevant fields are
-                 ``n_shared_experts``, ``n_routed_experts``,
-                 ``n_activated_experts``, ``expert_hidden_dim``,
-                 ``moe_balance_alpha``, ``moe_score_func``,
-                 ``moe_n_groups``, ``moe_topk_groups``, and
-                 ``moe_route_scale``.
+        参数:
+            cfg: 模型配置。相关字段为
+                 ``n_shared_experts``、``n_routed_experts``、
+                 ``n_activated_experts``、``expert_hidden_dim``、
+                 ``moe_balance_alpha``、``moe_score_func``、
+                 ``moe_n_groups``、``moe_topk_groups`` 和
+                 ``moe_route_scale``。
         """
         super().__init__()
         self.d_model = cfg.d_model
@@ -508,12 +497,12 @@ class DeepSeekMoE(nn.Module):
         self.n_activated_experts = cfg.n_activated_experts
         self.moe_balance_alpha = cfg.moe_balance_alpha
 
-        # Shared experts: single dense SwiGLU with hidden = K_s × expert_hidden
-        # (matches DeepSeek-V3's ``MLP(dim, n_shared_experts * moe_inter_dim)``)
+        # 共享专家: 单个密集 SwiGLU，隐藏维度 = K_s × expert_hidden
+        # （匹配 DeepSeek-V3 的 ``MLP(dim, n_shared_experts * moe_inter_dim)``）
         shared_hidden = cfg.n_shared_experts * cfg.expert_hidden_dim
         self.shared_experts = _SharedFFN(cfg.d_model, shared_hidden)
 
-        # Routing gate
+        # 路由门控
         self.gate = DeepSeekGate(
             d_model=cfg.d_model,
             n_routed_experts=cfg.n_routed_experts,
@@ -525,7 +514,7 @@ class DeepSeekMoE(nn.Module):
             use_bias=False,
         )
 
-        # Routed experts pool
+        # 路由专家池
         self.experts = nn.ModuleList(
             [
                 DeepSeekExpert(cfg.d_model, cfg.expert_hidden_dim)
@@ -534,43 +523,43 @@ class DeepSeekMoE(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Run the MoE layer.
+        """运行 MoE 层。
 
-        Args:
-            x: ``[B, T, D]`` hidden states.
+        参数:
+            x: ``[B, T, D]`` 隐藏状态。
 
-        Returns:
-            output:        ``[B, T, D]``  updated hidden states.
-            balance_loss:  Scalar expert-level balance loss (during training),
-                           or ``None`` during inference.
+        返回:
+            output:        ``[B, T, D]``  更新后的隐藏状态。
+            balance_loss:  训练时的标量专家级负载均衡损失，
+                           推理时为 ``None``。
         """
         shape = x.shape
         x_flat = x.view(-1, self.d_model)  # [T_tot, D]
         n_tokens = x_flat.size(0)
 
-        # ---- Shared experts (all tokens) ---------------------------------
+        # ---- 共享专家（所有 token）---------------------------------
         z = self.shared_experts(x_flat)  # [T_tot, D]
 
-        # ---- Routed experts (sparse) -------------------------------------
+        # ---- 路由专家（稀疏）-------------------------------------
         weights, indices, scores = self.gate(x_flat)
         # weights: [T_tot, K'], indices: [T_tot, K'], scores: [T_tot, N_r]
 
         y = torch.zeros_like(x_flat)
 
-        # Dispatch: for each expert compute on its assigned tokens
-        # (token-major loop matches DeepSeek-V3's reference implementation)
+        # 分发: 对每个专家计算其分配到的 token
+        # （token 主循环匹配 DeepSeek-V3 的参考实现）
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
         for i, expert in enumerate(self.experts):
             if counts[i].item() == 0:
                 continue
             tok_idx, rank_in_k = torch.where(
                 indices == i
-            )  # which tokens & which K slot
+            )  # 哪些 token 和哪个 K 槽位
             y[tok_idx] += expert(x_flat[tok_idx]) * weights[tok_idx, rank_in_k, None]
 
         output = (y + z).view(shape)
 
-        # ---- Expert-level balance loss (DeepSeekMoE §3.3) ----------------
+        # ---- 专家级负载均衡损失（DeepSeekMoE §3.3）----------------
         balance_loss: Optional[torch.Tensor] = None
         if self.training and self.moe_balance_alpha > 0.0:
             balance_loss = self._balance_loss(indices, scores, n_tokens)
@@ -580,71 +569,70 @@ class DeepSeekMoE(nn.Module):
     def _balance_loss(
         self,
         indices: torch.Tensor,  # [T, K']  int64
-        scores: torch.Tensor,  # [T, N_r] float32 (full distribution)
+        scores: torch.Tensor,  # [T, N_r] float32（完整分布）
         n_tokens: int,
     ) -> torch.Tensor:
-        """Compute the expert-level balance loss (DeepSeekMoE §3.3).
+        """计算专家级负载均衡损失（DeepSeekMoE §3.3）。
 
-        Penalises routing imbalance by encouraging the model to spread tokens
-        evenly across experts.  Only the soft-score term ``P_i`` receives a
-        gradient; the hard-count term ``f_i`` is non-differentiable and acts
-        as a fixed weighting coefficient.
+        通过鼓励模型将 token 均匀分布到各专家来惩罚路由不平衡。
+        只有软分数项 ``P_i`` 接收梯度；硬计数项 ``f_i`` 不可微分，
+        作为固定加权系数。
 
         ::
 
-            f_i = (N_r / (K' × T)) × #{tokens routed to expert i}
+            f_i = (N_r / (K' × T)) × #{路由到专家 i 的 token 数}
             P_i = (1/T) Σ_t scores[t, i]
             L   = Σ_i  f_i · P_i
 
-        For perfect balance ``f_i = 1`` for all *i* and ``L = Σ P_i = 1``
-        (softmax) or some constant (sigmoid).  Overloaded experts produce
-        large ``f_i``, pushing their mean score ``P_i`` up via the gradient
-        and thereby attracting more tokens — stabilising load over training.
+        完美平衡时 ``f_i = 1``（对所有 *i*）且 ``L = Σ P_i = 1``
+        （softmax）或某个常数（sigmoid）。过载的专家产生较大的 ``f_i``，
+        通过梯度推高其平均分数 ``P_i``，从而吸引更多 token —
+        在训练过程中稳定负载。
 
-        Args:
-            indices:  ``[T, K']`` int64 — expert indices selected per token.
-            scores:   ``[T, N_r]`` float32 — full soft distribution from the
-                      gate (before top-K selection), used for ``P_i``.
-            n_tokens: Total number of tokens in the batch (``B × T``).
+        参数:
+            indices:  ``[T, K']`` int64 — 每 token 选择的专家索引。
+            scores:   ``[T, N_r]`` float32 — 来自门控的完整软分布
+                      （Top-K 选择前），用于 ``P_i``。
+            n_tokens: 批次中的 token 总数 (``B × T``)。
 
-        Returns:
-            Scalar balance loss tensor.
+        返回:
+            标量负载均衡损失张量。
         """
         Nr, K = self.n_routed_experts, self.n_activated_experts
 
-        # Routing counts per expert (non-differentiable)
+        # 每专家路由计数（不可微分）
         counts = torch.zeros(Nr, dtype=torch.float32, device=indices.device)
         counts.scatter_add_(
             0,
             indices.flatten(),
             torch.ones(indices.numel(), dtype=torch.float32, device=indices.device),
         )
-        f = counts * (Nr / (K * n_tokens))  # normalised frequency [N_r]
+        f = counts * (Nr / (K * n_tokens))  # 归一化频率 [N_r]
 
-        # Mean soft gate score per expert (differentiable through softmax/sigmoid)
+        # 每专家平均软门控分数（通过 softmax/sigmoid 可微分）
         P = scores.mean(dim=0)  # [N_r]
 
-        # f is derived from hard top-K → no gradient; gradient flows through P only
+        # f 来自硬 Top-K → 无梯度；梯度仅通过 P 流动
         return (f * P).sum()
 
 
 class _SharedFFN(nn.Module):
-    """Dense SwiGLU FFN used for the always-active shared experts.
+    """用于始终激活的共享专家的密集 SwiGLU FFN。
 
-    Mirrors :class:`DeepSeekExpert` but is a single larger MLP whose
-    ``hidden_dim`` equals ``n_shared_experts × expert_hidden_dim``.  This
-    matches DeepSeek-V3's ``MLP(dim, n_shared_experts * moe_inter_dim)``.
+    与 :class:`DeepSeekExpert` 结构相同，但是一个更大的单一 MLP，
+    其 ``hidden_dim`` 等于 ``n_shared_experts × expert_hidden_dim``。
+    这匹配 DeepSeek-V3 的 ``MLP(dim, n_shared_experts * moe_inter_dim)``。
 
-    Not part of the public API — instantiated only by :class:`DeepSeekMoE`.
+    不属于公共 API — 仅由 :class:`DeepSeekMoE` 实例化。
     """
 
     def __init__(self, d_model: int, hidden_dim: int) -> None:
-        """Create the shared-expert FFN.
+        """创建共享专家 FFN。
 
-        Args:
-            d_model:    Token hidden dimension (input and output).
-            hidden_dim: Combined intermediate size for all shared experts
-                        (``n_shared_experts × expert_hidden_dim``).
+        参数:
+            d_model:    token 隐藏维度（输入和输出）。
+            hidden_dim: 所有共享专家的组合中间维度
+                        (``n_shared_experts × expert_hidden_dim``)。
         """
         super().__init__()
         self.w1 = nn.Linear(d_model, hidden_dim, bias=False)
@@ -652,54 +640,54 @@ class _SharedFFN(nn.Module):
         self.w2 = nn.Linear(hidden_dim, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the shared SwiGLU FFN to every token.
+        """对每个 token 应用共享 SwiGLU FFN。
 
-        Args:
-            x: Flattened token features, shape ``[B*T, d_model]``.
+        参数:
+            x: 展平的 token 特征，形状 ``[B*T, d_model]``。
 
-        Returns:
-            Transformed features, shape ``[B*T, d_model]``.
+        返回:
+            变换后的特征，形状 ``[B*T, d_model]``。
         """
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 # ---------------------------------------------------------------------------
-# MoDA Attention (unchanged from base file)
+# MoDA 注意力（与基础文件相同）
 # ---------------------------------------------------------------------------
 
 
 class MoDAAttention(nn.Module):
-    """Mixture-of-Depths Attention — read side.
+    """混合深度注意力 — 读取端。
 
-    Each query jointly attends (single softmax) to:
-      * Sequence KVs at the current layer (causal GQA).
-      * Depth KVs from all preceding layers at the *same* token position.
+    每个查询在单个 softmax 下同时关注:
+      * 当前层的序列 KV（因果 GQA）。
+      * 来自所有前序层在*相同* token 位置的深度 KV。
 
-    Depth cache entries are written externally by :class:`MoDABlock` from
-    the full block output X_l^out (after the MoE FFN).
+    深度缓存条目由 :class:`MoDABlock` 从完整块输出 X_l^out
+    （MoE FFN 之后）外部写入。
 
-    Args:
-        cfg: :class:`MoDAConfig` instance.
+    参数:
+        cfg: :class:`MoDAConfig` 实例。
     """
 
     def __init__(self, cfg: MoDAConfig) -> None:
-        """Build the MoDA attention module.
+        """构建 MoDA 注意力模块。
 
-        Creates four projection matrices (Q, K, V, O) sized for GQA and
-        stores the attention scale and dropout rate.
+        创建四个投影矩阵（Q、K、V、O），大小适配 GQA，
+        并存储注意力缩放因子和 dropout 率。
 
-        Args:
-            cfg: Model configuration.  Must satisfy
-                 ``n_heads_q % n_heads_kv == 0`` (GQA requirement).
+        参数:
+            cfg: 模型配置。必须满足
+                 ``n_heads_q % n_heads_kv == 0``（GQA 要求）。
 
-        Raises:
-            ValueError: If ``n_heads_q`` is not divisible by ``n_heads_kv``.
+        异常:
+            ValueError: 当 ``n_heads_q`` 不能被 ``n_heads_kv`` 整除时。
         """
         super().__init__()
         if cfg.n_heads_q % cfg.n_heads_kv != 0:
             raise ValueError(
-                f"n_heads_q ({cfg.n_heads_q}) must be divisible by "
-                f"n_heads_kv ({cfg.n_heads_kv}) for GQA."
+                f"n_heads_q ({cfg.n_heads_q}) 必须能被 "
+                f"n_heads_kv ({cfg.n_heads_kv}) 整除以支持 GQA。"
             )
 
         self.n_heads_q = cfg.n_heads_q
@@ -718,20 +706,20 @@ class MoDAAttention(nn.Module):
         self.o_proj = nn.Linear(inner_q, cfg.d_model, bias=False)
 
     def _expand_kv(self, kv: torch.Tensor) -> torch.Tensor:
-        """Repeat KV heads along dim 1 to match the number of query heads.
+        """沿 dim 1 重复 KV 头以匹配查询头数。
 
-        With GQA group size G, each KV head is shared by G query heads.
-        ``repeat_interleave(G, dim=1)`` produces the correct interleaved
-        expansion so that query head ``h`` is paired with KV head ``h // G``.
+        GQA 组大小为 G 时，每个 KV 头被 G 个查询头共享。
+        ``repeat_interleave(G, dim=1)`` 产生正确的交错扩展，
+        使查询头 ``h`` 与 KV 头 ``h // G`` 配对。
 
-        Args:
-            kv: Key or value tensor whose dim 1 is the KV-head axis.
-                Supported shapes: ``[B, Hk, T, d]`` (sequence) and
-                ``[B, Hk, T, L, d]`` (depth stack).
+        参数:
+            kv: 键或值张量，dim 1 为 KV 头轴。
+                支持的形状: ``[B, Hk, T, d]``（序列）和
+                ``[B, Hk, T, L, d]``（深度堆栈）。
 
-        Returns:
-            Tensor with dim 1 expanded from ``Hk`` to ``Hq = Hk × G``.
-            Returns *kv* unchanged when ``gqa_group == 1``.
+        返回:
+            dim 1 从 ``Hk`` 扩展到 ``Hq = Hk × G`` 的张量。
+            当 ``gqa_group == 1`` 时返回 *kv* 不变。
         """
         if self.gqa_group == 1:
             return kv
@@ -745,16 +733,16 @@ class MoDAAttention(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute MoDA attention output.
+        """计算 MoDA 注意力输出。
 
-        Args:
-            x:             ``[B, T, D]`` input hidden states.
-            depth_k_cache: ``L`` tensors each ``[B, Hk, T, d]`` — depth keys.
-            depth_v_cache: Matching depth values.
-            cos/sin:       RoPE tables ``[1, 1, T, d]``.
+        参数:
+            x:             ``[B, T, D]`` 输入隐藏状态。
+            depth_k_cache: ``L`` 个张量，每个 ``[B, Hk, T, d]`` — 深度键。
+            depth_v_cache: 匹配的深度值。
+            cos/sin:       RoPE 表 ``[1, 1, T, d]``。
 
-        Returns:
-            ``[B, T, D]`` output hidden states.
+        返回:
+            ``[B, T, D]`` 输出隐藏状态。
         """
         B, T, D = x.shape
         Hq, Hk, d = self.n_heads_q, self.n_heads_kv, self.head_dim
@@ -781,7 +769,7 @@ class MoDAAttention(nn.Module):
                 scale=self.scale,
             )
         else:
-            # Sequence logits [B, Hq, T, T] with causal mask
+            # 序列 logits [B, Hq, T, T]，带因果掩码
             seq_logits = torch.matmul(Q, K_e.transpose(-2, -1)) * self.scale
             causal_mask = torch.triu(
                 torch.full((T, T), float("-inf"), device=x.device, dtype=Q.dtype),
@@ -789,16 +777,16 @@ class MoDAAttention(nn.Module):
             )
             seq_logits = seq_logits + causal_mask
 
-            # Depth KVs: [B, Hk, L, T, d] → [B, Hk, T, L, d]
+            # 深度 KV: [B, Hk, L, T, d] → [B, Hk, T, L, d]
             K_depth = torch.stack(depth_k_cache, dim=2).permute(0, 1, 3, 2, 4)
             V_depth = torch.stack(depth_v_cache, dim=2).permute(0, 1, 3, 2, 4)
             K_depth_e = self._expand_kv(K_depth)
             V_depth_e = self._expand_kv(V_depth)
 
-            # Depth logits [B, Hq, T, L]
+            # 深度 logits [B, Hq, T, L]
             depth_logits = torch.einsum("bhid,bhild->bhil", Q, K_depth_e) * self.scale
 
-            # Unified softmax over T + L positions
+            # 在 T + L 个位置上的统一 softmax
             combined = torch.cat([seq_logits, depth_logits], dim=-1)
             weights = F.softmax(combined, dim=-1)
             if self.training and self.dropout > 0.0:
@@ -815,44 +803,43 @@ class MoDAAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# MoDA Transformer Block
+# MoDA Transformer 块
 # ---------------------------------------------------------------------------
 
 
 class MoDABlock(nn.Module):
-    """Single MoDA + DeepSeek-MoE transformer block.
+    """单个 MoDA + DeepSeek-MoE Transformer 块。
 
-    Structure (post-norm, per MoDA paper recommendation):
+    结构（后归一化，按 MoDA 论文推荐）:
 
     .. code-block::
 
-        x  ──► Attention ──► + ──► RMSNorm ──► x_mid
-        x                    ↑ (residual)
-        x_mid ──► MoE    ──► + ──► RMSNorm ──► x_out
-        x_mid               ↑ (residual)
-        x_out ──► W_K^W  ──► k_write  }  appended to MoDA depth KV cache
-              └─► W_V^W  ──► v_write  }  by MoDAModel for the next layer
+        x  ──► 注意力 ──► + ──► RMSNorm ──► x_mid
+        x                 ↑ (残差)
+        x_mid ──► MoE  ──► + ──► RMSNorm ──► x_out
+        x_mid              ↑ (残差)
+        x_out ──► W_K^W ──► k_write  }  追加到 MoDA 深度 KV 缓存
+              └─► W_V^W ──► v_write  }  由 MoDAModel 传递给下一层
 
-    The MoE layer also returns an optional expert-level balance loss scalar
-    which is propagated up to :class:`MoDAModel` for inclusion in the total
-    training loss.
+    MoE 层还返回一个可选的专家级负载均衡损失标量，
+    该标量被传播到 :class:`MoDAModel` 以包含在总训练损失中。
 
-    Args:
-        cfg: :class:`MoDAConfig` instance.
+    参数:
+        cfg: :class:`MoDAConfig` 实例。
     """
 
     def __init__(self, cfg: MoDAConfig) -> None:
-        """Build one MoDA + MoE transformer block.
+        """构建一个 MoDA + MoE Transformer 块。
 
-        Constructs and wires together:
-          * ``attn``      — :class:`MoDAAttention` (depth-aware GQA).
-          * ``moe``       — :class:`DeepSeekMoE` (shared + routed experts).
-          * ``norm_attn`` / ``norm_ffn`` — post-sublayer :class:`RMSNorm`.
-          * ``k_write`` / ``v_write`` — depth-cache write projections
-            ``D → n_heads_kv × head_dim``.
+        构造并连接:
+          * ``attn``      — :class:`MoDAAttention`（深度感知 GQA）。
+          * ``moe``       — :class:`DeepSeekMoE`（共享 + 路由专家）。
+          * ``norm_attn`` / ``norm_ffn`` — 子层后 :class:`RMSNorm`。
+          * ``k_write`` / ``v_write`` — 深度缓存写入投影
+            ``D → n_heads_kv × head_dim``。
 
-        Args:
-            cfg: Model configuration.
+        参数:
+            cfg: 模型配置。
         """
         super().__init__()
         inner_kv = cfg.n_heads_kv * cfg.head_dim
@@ -862,7 +849,7 @@ class MoDABlock(nn.Module):
         self.norm_attn = RMSNorm(cfg.d_model, cfg.norm_eps)
         self.norm_ffn = RMSNorm(cfg.d_model, cfg.norm_eps)
 
-        # MoDA depth-cache write projections: K_l = X_l^out W_K^W, V_l = X_l^out W_V^W
+        # MoDA 深度缓存写入投影: K_l = X_l^out W_K^W, V_l = X_l^out W_V^W
         self.k_write = nn.Linear(cfg.d_model, inner_kv, bias=False)
         self.v_write = nn.Linear(cfg.d_model, inner_kv, bias=False)
 
@@ -877,30 +864,30 @@ class MoDABlock(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """Run one MoDA + MoE transformer block.
+        """运行一个 MoDA + MoE Transformer 块。
 
-        Args:
-            x:             ``[B, T, D]`` input hidden states.
-            depth_k_cache: Depth keys from all preceding layers, each ``[B, Hk, T, d]``.
-            depth_v_cache: Matching depth values.
-            cos/sin:       RoPE tables ``[1, 1, T, d]``.
+        参数:
+            x:             ``[B, T, D]`` 输入隐藏状态。
+            depth_k_cache: 来自所有前序层的深度键，每个 ``[B, Hk, T, d]``。
+            depth_v_cache: 匹配的深度值。
+            cos/sin:       RoPE 表 ``[1, 1, T, d]``。
 
-        Returns:
-            x_out:        ``[B, T, D]`` updated hidden states.
-            k_write:      ``[B, Hk, T, d]`` depth cache key for this layer.
-            v_write:      ``[B, Hk, T, d]`` depth cache value for this layer.
-            balance_loss: Scalar expert-level balance loss, or ``None`` at inference.
+        返回:
+            x_out:        ``[B, T, D]`` 更新后的隐藏状态。
+            k_write:      ``[B, Hk, T, d]`` 本层的深度缓存键。
+            v_write:      ``[B, Hk, T, d]`` 本层的深度缓存值。
+            balance_loss: 标量专家级负载均衡损失，推理时为 ``None``。
         """
         B, T, _ = x.shape
 
-        # Post-norm attention sub-layer
+        # 后归一化注意力子层
         x = self.norm_attn(x + self.attn(x, depth_k_cache, depth_v_cache, cos, sin))
 
-        # Post-norm MoE sub-layer
+        # 后归一化 MoE 子层
         moe_out, balance_loss = self.moe(x)
         x = self.norm_ffn(x + moe_out)
 
-        # Depth write projections from X_l^out (full block output, after MoE)
+        # 从 X_l^out（完整块输出，MoE 之后）进行深度写入投影
         k_write = (
             self.k_write(x).view(B, T, self._n_heads_kv, self._head_dim).transpose(1, 2)
         )
@@ -908,38 +895,37 @@ class MoDABlock(nn.Module):
             self.v_write(x).view(B, T, self._n_heads_kv, self._head_dim).transpose(1, 2)
         )
 
-        # RoPE on k_write for positional consistency during future depth reads
+        # 对 k_write 应用 RoPE 以保持未来深度读取时的位置一致性
         k_write = apply_rotary_emb(k_write, cos, sin)
 
         return x, k_write, v_write, balance_loss
 
 
 # ---------------------------------------------------------------------------
-# Full MoDA + MoE Language Model
+# 完整 MoDA + MoE 语言模型
 # ---------------------------------------------------------------------------
 
 
 class MoDAModel(nn.Module):
-    """Decoder-only LM with Mixture-of-Depths Attention and DeepSeek MoE FFN.
+    """带混合深度注意力和 DeepSeek MoE FFN 的纯解码器语言模型。
 
-    Loss = LM cross-entropy  +  moe_balance_alpha × mean(per-layer balance losses)
+    损失 = LM 交叉熵 + moe_balance_alpha × mean(每层负载均衡损失)
 
-    The depth KV cache is a local list inside :meth:`forward` — never stored
-    on ``self``, so autograd is clean across independent forward calls.
+    深度 KV 缓存是 :meth:`forward` 内部的局部列表 — 不存储在
+    ``self`` 上，因此自动微分在独立的前向调用之间是干净的。
 
-    Args:
-        cfg: :class:`MoDAConfig` specifying the full model.
+    参数:
+        cfg: 指定完整模型的 :class:`MoDAConfig`。
     """
 
     def __init__(self, cfg: MoDAConfig) -> None:
-        """Build the full MoDA + MoE language model.
+        """构建完整的 MoDA + MoE 语言模型。
 
-        Constructs the token embedding, RoPE, all transformer blocks, a final
-        RMSNorm, and the language-model head.  The embedding and LM-head
-        weights are tied so they share the same parameter.
+        构造 token 嵌入、RoPE、所有 Transformer 块、最终 RMSNorm
+        和语言模型头。嵌入和 LM 头权重绑定，共享同一参数。
 
-        Args:
-            cfg: :class:`MoDAConfig` that fully specifies the model.
+        参数:
+            cfg: 完整指定模型的 :class:`MoDAConfig`。
         """
         super().__init__()
         self.cfg = cfg
@@ -950,22 +936,21 @@ class MoDAModel(nn.Module):
         self.norm_out = RMSNorm(cfg.d_model, cfg.norm_eps)
         self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
-        self.lm_head.weight = self.embed.weight  # weight tying
+        self.lm_head.weight = self.embed.weight  # 权重绑定
 
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Apply GPT-style weight initialisation to every sub-module.
+        """对每个子模块应用 GPT 风格的权重初始化。
 
-        * :class:`nn.Linear` and :class:`nn.Embedding` weights are drawn from
-          ``Normal(0, 0.02)`` — the standard initialisation used by GPT-2 and
-          most subsequent transformer implementations.
-        * :class:`DeepSeekGate` weight matrices are re-initialised with
-          ``kaiming_uniform`` (fan-in) to match the default ``nn.Linear``
-          init and avoid the Normal distribution being too narrow for a matrix
-          used without a subsequent non-linearity.
+        * :class:`nn.Linear` 和 :class:`nn.Embedding` 权重从
+          ``Normal(0, 0.02)`` 采样 — GPT-2 及后续大多数 Transformer
+          实现使用的标准初始化。
+        * :class:`DeepSeekGate` 权重矩阵用 ``kaiming_uniform``（fan-in）
+          重新初始化，以匹配默认的 ``nn.Linear`` 初始化，避免正态分布
+          对于不带后续非线性的矩阵过于狭窄。
 
-        Called automatically at the end of :meth:`__init__`.
+        在 :meth:`__init__` 结束时自动调用。
         """
         for m in self.modules():
             if isinstance(m, (nn.Linear, nn.Embedding)):
@@ -978,20 +963,20 @@ class MoDAModel(nn.Module):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Run the full MoDA + MoE language model.
+        """运行完整的 MoDA + MoE 语言模型。
 
-        Args:
-            input_ids: ``[B, T]`` token indices.
-            labels:    ``[B, T]`` targets for LM loss; -100 positions ignored.
+        参数:
+            input_ids: ``[B, T]`` token 索引。
+            labels:    ``[B, T]`` LM 损失的目标；-100 位置被忽略。
 
-        Returns:
-            logits:    ``[B, T, vocab_size]``.
-            loss:      ``lm_loss + balance_loss`` if labels provided, else ``None``.
+        返回:
+            logits:    ``[B, T, vocab_size]``。
+            loss:      若提供 labels 则为 ``lm_loss + balance_loss``，否则为 ``None``。
         """
         B, T = input_ids.shape
         if T > self.cfg.max_seq_len:
             raise ValueError(
-                f"Sequence length {T} exceeds max_seq_len={self.cfg.max_seq_len}."
+                f"序列长度 {T} 超过 max_seq_len={self.cfg.max_seq_len}。"
             )
 
         x = self.embed(input_ids)
@@ -1027,14 +1012,14 @@ class MoDAModel(nn.Module):
         return logits, loss
 
     def num_parameters(self, trainable_only: bool = False) -> int:
-        """Count the total number of scalar parameters in the model.
+        """统计模型中标量参数的总数。
 
-        Args:
-            trainable_only: If ``True``, count only parameters with
-                            ``requires_grad=True``, excluding frozen layers.
+        参数:
+            trainable_only: 若为 ``True``，仅统计 ``requires_grad=True``
+                            的参数，排除冻结层。
 
-        Returns:
-            Integer parameter count.
+        返回:
+            整数参数计数。
         """
         params = (
             self.parameters()
@@ -1044,20 +1029,18 @@ class MoDAModel(nn.Module):
         return sum(p.numel() for p in params)
 
     def extra_repr(self) -> str:
-        """Return a one-line summary string shown inside ``repr(model)``.
+        """返回显示在 ``repr(model)`` 中的单行摘要字符串。
 
-        Displayed by PyTorch's ``__repr__`` directly after the class name,
-        before the sub-module tree.
+        由 PyTorch 的 ``__repr__`` 在类名之后、子模块树之前直接显示。
 
-        Returns:
-            Human-readable string listing key model dimensions and the total
-            parameter count.
+        返回:
+            列出关键模型维度和总参数数的人类可读字符串。
         """
         c = self.cfg
         return (
             f"vocab={c.vocab_size}, d_model={c.d_model}, layers={c.n_layers}, "
             f"heads={c.n_heads_q}/{c.n_heads_kv} (GQA), "
-            f"experts=shared×{c.n_shared_experts}+routed×{c.n_routed_experts}"
+            f"experts=共享×{c.n_shared_experts}+路由×{c.n_routed_experts}"
             f"(top-{c.n_activated_experts}), "
-            f"params={self.num_parameters():,}"
+            f"参数量={self.num_parameters():,}"
         )

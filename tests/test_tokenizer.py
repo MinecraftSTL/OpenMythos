@@ -5,18 +5,18 @@ from open_mythos.tokenizer import MythosTokenizer
 @pytest.fixture(scope="module")
 def tokenizer():
     tok = MythosTokenizer()
-    print(f"\nLoaded tokenizer: {tok.tokenizer.name_or_path}")
+    print(f"\n已加载分词器: {tok.tokenizer.name_or_path}")
     return tok
 
 
 def test_loads(tokenizer):
     assert tokenizer is not None
-    print(f"Tokenizer: {tokenizer}")
+    print(f"分词器: {tokenizer}")
 
 
 def test_vocab_size(tokenizer):
     size = tokenizer.vocab_size
-    print(f"Vocab size: {size:,}")
+    print(f"词汇表大小: {size:,}")
     assert size > 0
 
 
@@ -45,29 +45,29 @@ def test_roundtrip(tokenizer):
     original = "The quick brown fox jumps over the lazy dog."
     ids = tokenizer.encode(original)
     recovered = tokenizer.decode(ids)
-    print(f"original:  '{original}'")
-    print(f"token ids: {ids}")
-    print(f"recovered: '{recovered}'")
+    print(f"原始文本:  '{original}'")
+    print(f"token ID: {ids}")
+    print(f"恢复文本: '{recovered}'")
     assert original in recovered or recovered in original
 
 
 def test_encode_long_text(tokenizer):
     text = "OpenMythos is a recurrent depth transformer. " * 100
     ids = tokenizer.encode(text)
-    print(f"Long text ({len(text)} chars) → {len(ids)} tokens")
+    print(f"长文本 ({len(text)} 字符) → {len(ids)} 个 token")
     assert len(ids) > 100
 
 
 def test_custom_model_id():
     tok = MythosTokenizer(model_id="openai/gpt-oss-20b")
-    print(f"Custom model_id vocab size: {tok.vocab_size:,}")
+    print(f"自定义 model_id 词汇表大小: {tok.vocab_size:,}")
     assert tok.vocab_size > 0
 
 
 def test_vocab_size_consistent(tokenizer):
     outer = tokenizer.vocab_size
     inner = tokenizer.tokenizer.vocab_size
-    print(f"vocab_size property: {outer:,}  |  inner tokenizer.vocab_size: {inner:,}")
+    print(f"vocab_size 属性: {outer:,}  |  内部 tokenizer.vocab_size: {inner:,}")
     assert outer == inner
 
 

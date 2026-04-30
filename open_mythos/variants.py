@@ -1,13 +1,13 @@
 from open_mythos.main import MythosConfig
 
-# Parameter budget breakdown per variant:
-#   total ≈ embed + prelude/coda dense blocks + recurrent MLA + MoE
-#   MoE   = 3 * dim * expert_dim * (n_experts + n_shared * n_experts_per_tok)
-# expert_dim is solved from the residual budget after all other terms.
+# 各变体的参数预算分解:
+#   总量 ≈ 嵌入 + 前奏/尾声密集块 + 循环 MLA + MoE
+#   MoE  = 3 * dim * expert_dim * (n_experts + n_shared * n_experts_per_tok)
+# expert_dim 由扣除所有其他项后的剩余预算求解。
 
 
 def mythos_1b() -> MythosConfig:
-    """1B parameter config. Small research/fine-tuning model. dim=2048, 64 experts, 16 loop iters, 4k context."""
+    """1B 参数配置。小型研究/微调模型。dim=2048, 64 专家, 16 循环迭代, 4k 上下文。"""
     return MythosConfig(
         vocab_size=32000,
         dim=2048,
@@ -34,7 +34,7 @@ def mythos_1b() -> MythosConfig:
 
 
 def mythos_3b() -> MythosConfig:
-    """3B parameter config. Compact inference model. dim=3072, 64 experts, 16 loop iters, 4k context."""
+    """3B 参数配置。紧凑推理模型。dim=3072, 64 专家, 16 循环迭代, 4k 上下文。"""
     return MythosConfig(
         vocab_size=32000,
         dim=3072,
@@ -61,7 +61,7 @@ def mythos_3b() -> MythosConfig:
 
 
 def mythos_10b() -> MythosConfig:
-    """10B parameter config. Mid-scale general model. dim=4096, 128 experts, 24 loop iters, 8k context."""
+    """10B 参数配置。中等规模通用模型。dim=4096, 128 专家, 24 循环迭代, 8k 上下文。"""
     return MythosConfig(
         vocab_size=32000,
         dim=4096,
@@ -88,7 +88,7 @@ def mythos_10b() -> MythosConfig:
 
 
 def mythos_50b() -> MythosConfig:
-    """50B parameter config. Large reasoning model. dim=6144, 256 experts, 32 loop iters, 8k context."""
+    """50B 参数配置。大型推理模型。dim=6144, 256 专家, 32 循环迭代, 8k 上下文。"""
     return MythosConfig(
         vocab_size=32000,
         dim=6144,
@@ -115,7 +115,7 @@ def mythos_50b() -> MythosConfig:
 
 
 def mythos_100b() -> MythosConfig:
-    """100B parameter config. Frontier-class model. dim=8192, 256 experts, 32 loop iters, 1M context, 128k output."""
+    """100B 参数配置。前沿级模型。dim=8192, 256 专家, 32 循环迭代, 1M 上下文, 128k 输出。"""
     return MythosConfig(
         vocab_size=32000,
         dim=8192,
@@ -143,7 +143,7 @@ def mythos_100b() -> MythosConfig:
 
 
 def mythos_500b() -> MythosConfig:
-    """500B parameter config. Ultra-scale MoE model. dim=12288, 512 experts, 48 loop iters, 1M context, 128k output."""
+    """500B 参数配置。超大规模 MoE 模型。dim=12288, 512 专家, 48 循环迭代, 1M 上下文, 128k 输出。"""
     return MythosConfig(
         vocab_size=100000,
         dim=12288,
@@ -171,7 +171,7 @@ def mythos_500b() -> MythosConfig:
 
 
 def mythos_1t() -> MythosConfig:
-    """1T parameter config. Maximum scale. dim=16384, 512 experts, 64 loop iters, 1M context, 128k output."""
+    """1T 参数配置。最大规模。dim=16384, 512 专家, 64 循环迭代, 1M 上下文, 128k 输出。"""
     return MythosConfig(
         vocab_size=100000,
         dim=16384,

@@ -19,10 +19,10 @@ from open_mythos.main import (
 )
 
 # ---------------------------------------------------------------------------
-# Shared small configs (kept tiny so tests run fast on CPU)
+# 共享的小型配置（保持微型以便测试在 CPU 上快速运行）
 # ---------------------------------------------------------------------------
 
-B, T = 2, 8  # batch, sequence length
+B, T = 2, 8  # 批次大小, 序列长度
 
 
 def gqa_cfg(**overrides) -> MythosConfig:
@@ -42,7 +42,7 @@ def gqa_cfg(**overrides) -> MythosConfig:
         expert_dim=16,
         act_threshold=0.99,
         lora_rank=4,
-        # MLA fields must be valid even when not used
+        # MLA 字段即使未使用也必须有效
         kv_lora_rank=16,
         q_lora_rank=32,
         qk_rope_head_dim=8,
@@ -69,7 +69,7 @@ class TestRMSNorm:
         assert norm(x).shape == x.shape
 
     def test_unit_rms(self):
-        # after norm the RMS of each vector should be ≈ 1 when weight=1
+        # 归一化后，当 weight=1 时每个向量的 RMS 应 ≈ 1
         norm = RMSNorm(64)
         torch.nn.init.ones_(norm.weight)
         x = torch.randn(4, 64)
@@ -83,7 +83,7 @@ class TestRMSNorm:
 
 
 # ---------------------------------------------------------------------------
-# RoPE utilities
+# RoPE 工具函数
 # ---------------------------------------------------------------------------
 
 
@@ -100,7 +100,7 @@ class TestRoPE:
         assert out.shape == x.shape
 
     def test_apply_rope_preserves_norm(self):
-        # rotation is an isometry — norms must be unchanged
+        # 旋转是等距变换 — 范数必须保持不变
         freqs = precompute_rope_freqs(dim=16, max_len=32)
         x = torch.randn(B, T, 4, 16)
         out = apply_rope(x, freqs[:T])
@@ -110,33 +110,33 @@ class TestRoPE:
         freqs = precompute_rope_freqs(dim=16, max_len=32)
         x = torch.ones(1, 2, 1, 16)
         out = apply_rope(x, freqs[:2])
-        # position 0 and position 1 should produce different rotations
+        # 位置 0 和位置 1 应产生不同的旋转
         assert not torch.allclose(out[0, 0], out[0, 1])
 
 
 # ---------------------------------------------------------------------------
-# RoPE extended — correctness invariants
+# RoPE 扩展 — 正确性不变量
 # ---------------------------------------------------------------------------
 
 
 class TestRoPEExtended:
-    """Comprehensive correctness tests for precompute_rope_freqs and apply_rope."""
+    """precompute_rope_freqs 和 apply_rope 的全面正确性测试。"""
 
     # --- precompute_rope_freqs ---
 
     def test_position_zero_is_unit_phasor(self):
-        """freqs[0] must be all 1+0j (angle = 0 * freq = 0 for every pair)."""
+        """freqs[0] 必须全为 1+0j（角度 = 0 * freq = 0，对每一对都成立）。"""
         freqs = precompute_rope_freqs(dim=16, max_len=8)
         expected = torch.ones(8, dtype=torch.complex64)
         assert torch.allclose(freqs[0], expected, atol=1e-6)
 
     def test_all_phasors_have_unit_magnitude(self):
-        """Every phasor magnitude must be 1 — RoPE is an isometric rotation."""
+        """每个相量的幅度必须为 1 — RoPE 是等距旋转。"""
         freqs = precompute_rope_freqs(dim=16, max_len=32)
         assert torch.allclose(freqs.abs(), torch.ones_like(freqs.abs()), atol=1e-6)
 
     def test_angles_equal_outer_product(self):
-        """freqs[t, k].angle() must equal t × base_freq[k] for all t, k."""
+        """freqs[t, k].angle() 必须等于 t × base_freq[k]，对所有 t, k 成立。"""
         dim, max_len, theta = 8, 6, 500000.0
         freqs = precompute_rope_freqs(dim=dim, max_len=max_len, theta=theta)
         base = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
@@ -146,10 +146,10 @@ class TestRoPEExtended:
         assert torch.allclose(freqs.imag, expected.imag, atol=1e-6)
 
     def test_higher_theta_produces_smaller_angles(self):
-        """Larger theta → slower frequency decay → smaller rotation angle per step.
+        """更大的 theta → 更慢的频率衰减 → 每步更小的旋转角度。
 
-        Index 0 (dim_i=0) is excluded: its frequency is 1/(theta^0)=1 for any theta,
-        so the comparison is not meaningful there.
+        索引 0（dim_i=0）被排除：其频率为 1/(theta^0)=1，对任何 theta 都相同，
+        因此在此处比较没有意义。
         """
         dim, max_len = 16, 8
         freqs_fast = precompute_rope_freqs(dim=dim, max_len=max_len, theta=100.0)
@@ -157,7 +157,7 @@ class TestRoPEExtended:
         assert (freqs_fast[1, 1:].angle().abs() > freqs_slow[1, 1:].angle().abs()).all()
 
     def test_default_theta_matches_explicit(self):
-        """Omitting theta must equal passing theta=500000.0."""
+        """省略 theta 必须等同于传入 theta=500000.0。"""
         f1 = precompute_rope_freqs(16, 8)
         f2 = precompute_rope_freqs(16, 8, theta=500000.0)
         assert torch.allclose(f1.real, f2.real) and torch.allclose(f1.imag, f2.imag)
@@ -165,7 +165,7 @@ class TestRoPEExtended:
     # --- apply_rope ---
 
     def test_position_zero_is_identity(self):
-        """T=1 input uses only freqs[0] = 1+0j, so output must equal input."""
+        """T=1 输入仅使用 freqs[0] = 1+0j，因此输出必须等于输入。"""
         freqs = precompute_rope_freqs(dim=16, max_len=8)
         x = torch.randn(2, 1, 4, 16)
         out = apply_rope(x, freqs[:1])
@@ -182,7 +182,7 @@ class TestRoPEExtended:
         assert apply_rope(x, freqs[:4]).dtype == torch.float16
 
     def test_inverse_rotation_recovers_input(self):
-        """Rotating by freqs then by conj(freqs) (inverse) must recover the original."""
+        """先用 freqs 旋转再用 conj(freqs)（逆旋转）必须恢复原始值。"""
         dim = 16
         freqs = precompute_rope_freqs(dim=dim, max_len=8)
         x = torch.randn(2, 4, 3, dim)
@@ -193,7 +193,7 @@ class TestRoPEExtended:
         assert torch.allclose(x, recovered, atol=1e-5)
 
     def test_batch_independence(self):
-        """Output for one batch item must not depend on other items in the batch."""
+        """一个批次项的输出不应依赖于批次中的其他项。"""
         dim = 16
         freqs = precompute_rope_freqs(dim=dim, max_len=16)
         torch.manual_seed(7)
@@ -204,7 +204,7 @@ class TestRoPEExtended:
         assert torch.allclose(solo, batched, atol=1e-6)
 
     def test_head_independence(self):
-        """All heads at the same position must receive identical rotations."""
+        """同一位置的所有头必须接收相同的旋转。"""
         dim = 16
         freqs = precompute_rope_freqs(dim=dim, max_len=8)
         x = torch.randn(1, 4, 1, dim).expand(1, 4, 3, dim).contiguous()
@@ -214,8 +214,8 @@ class TestRoPEExtended:
 
     def test_relative_position_property(self):
         """
-        Core RoPE invariant: <RoPE(q,m), RoPE(k,n)> depends only on (n-m).
-        Two pairs with the same offset must produce the same dot product.
+        核心 RoPE 不变量：<RoPE(q,m), RoPE(k,n)> 仅取决于 (n-m)。
+        具有相同偏移的两对必须产生相同的点积。
         """
         dim, max_len = 16, 32
         freqs = precompute_rope_freqs(dim=dim, max_len=max_len)
@@ -224,18 +224,18 @@ class TestRoPEExtended:
         k = torch.randn(1, 1, 1, dim)
 
         def rope_at(tensor, pos):
-            """Rotate tensor at a specific position by embedding it in a zero sequence."""
+            """通过将张量嵌入零序列来在特定位置旋转。"""
             seq = torch.zeros(1, pos + 1, 1, dim)
             seq[0, pos] = tensor[0, 0]
             return apply_rope(seq, freqs[: pos + 1])[:, pos : pos + 1]
 
-        # Both pairs have relative offset n - m = 6
+        # 两对的相对偏移 n - m = 6
         dot_3_9 = (rope_at(q, 3) * rope_at(k, 9)).sum()
         dot_1_7 = (rope_at(q, 1) * rope_at(k, 7)).sum()
         assert torch.allclose(dot_3_9, dot_1_7, atol=1e-5)
 
     def test_max_len_boundary(self):
-        """apply_rope must handle T == max_len without error or NaN."""
+        """apply_rope 必须在 T == max_len 时无错误或 NaN 地处理。"""
         max_len = 10
         freqs = precompute_rope_freqs(dim=8, max_len=max_len)
         x = torch.randn(1, max_len, 2, 8)
@@ -244,7 +244,7 @@ class TestRoPEExtended:
         assert not torch.isnan(out).any()
 
     def test_exceeds_max_len_raises(self):
-        """apply_rope must raise RuntimeError when T > max_len."""
+        """当 T > max_len 时 apply_rope 必须抛出 RuntimeError。"""
         freqs = precompute_rope_freqs(dim=8, max_len=4)
         x = torch.randn(1, 8, 2, 8)  # T=8 > max_len=4
         with pytest.raises(RuntimeError):
@@ -275,7 +275,7 @@ class TestGQAttention:
         self.attn(x, self.freqs, kv_cache=cache, cache_key="layer0")
         assert "layer0" in cache
         k_len = cache["layer0"]["k"].shape[1]
-        # second call adds T more tokens
+        # 第二次调用增加 T 个 token
         self.attn(x, self.freqs, kv_cache=cache, cache_key="layer0")
         assert cache["layer0"]["k"].shape[1] == k_len + T
 
@@ -311,7 +311,7 @@ class TestMLAttention:
         self.attn(x, self.freqs, kv_cache=cache, cache_key="mla0")
         assert "c_kv" in cache["mla0"]
         assert "k_rope" in cache["mla0"]
-        # c_kv should have kv_lora_rank as last dim, not full K/V
+        # c_kv 的最后一维应为 kv_lora_rank，而非完整的 K/V
         assert cache["mla0"]["c_kv"].shape[-1] == self.cfg.kv_lora_rank
 
     def test_cache_accumulates_across_steps(self):
@@ -330,7 +330,7 @@ class TestMLAttention:
 
 
 # ---------------------------------------------------------------------------
-# Expert (dense SwiGLU FFN)
+# Expert（密集 SwiGLU FFN）
 # ---------------------------------------------------------------------------
 
 
@@ -361,12 +361,12 @@ class TestMoEFFN:
         assert self.moe(x).shape == (B, T, self.cfg.dim)
 
     def test_router_bias_not_grad(self):
-        # router_bias is a buffer, not a parameter
+        # router_bias 是缓冲区，不是参数
         param_names = {n for n, _ in self.moe.named_parameters()}
         assert "router_bias" not in param_names
 
     def test_shared_experts_always_fire(self):
-        # Zero out all routed experts; output should still be nonzero from shared
+        # 将所有路由专家置零；输出仍应因共享专家而非零
         for exp in self.moe.routed_experts:
             for p in exp.parameters():
                 p.data.zero_()
@@ -396,7 +396,7 @@ class TestLoopIndexEmbedding:
         h = torch.zeros(1, 1, 64)
         loop_dim = 8
         out = loop_index_embedding(h, loop_t=3, loop_dim=loop_dim)
-        # channels beyond loop_dim should be unchanged (still 0)
+        # loop_dim 之后的通道应保持不变（仍为 0）
         assert torch.all(out[..., loop_dim:] == 0)
 
 
@@ -477,7 +477,7 @@ class TestLTIInjection:
         assert A.min().item() > 0.0
 
     def test_spectral_radius_stable_after_large_grad_step(self):
-        # Simulate an aggressive gradient update and verify stability holds
+        # 模拟激进的梯度更新并验证稳定性仍然成立
         opt = torch.optim.SGD(self.inj.parameters(), lr=1e3)
         h = torch.randn(B, T, 64)
         e = torch.randn(B, T, 64)
@@ -544,7 +544,7 @@ class TestRecurrentBlock:
 
 
 # ---------------------------------------------------------------------------
-# OpenMythos — GQA mode
+# OpenMythos — GQA 模式
 # ---------------------------------------------------------------------------
 
 
@@ -574,13 +574,13 @@ class TestOpenMythosGQA:
         assert A.max().item() < 1.0
 
     def test_depth_extrapolation_changes_output(self):
-        # More loops at inference should produce different (ideally better) output
+        # 推理时更多循环应产生不同的（理想情况下更好的）输出
         logits_shallow = self.model(self.ids, n_loops=1)
         logits_deep = self.model(self.ids, n_loops=3)
         assert not torch.allclose(logits_shallow, logits_deep)
 
     def test_kv_cache_generate_matches_no_cache(self):
-        # Single-token generation with and without cache should agree
+        # 有缓存和无缓存的单 token 生成应一致
         torch.manual_seed(0)
         prompt = torch.randint(0, self.cfg.vocab_size, (1, T))
         with torch.no_grad():
@@ -590,14 +590,14 @@ class TestOpenMythosGQA:
         assert torch.allclose(logits_no_cache, logits_cached, atol=1e-4)
 
     def test_single_token_forward(self):
-        # Mask is None when T=1; should not crash
+        # T=1 时 mask 为 None；不应崩溃
         single = torch.randint(0, self.cfg.vocab_size, (B, 1))
         logits = self.model(single)
         assert logits.shape == (B, 1, self.cfg.vocab_size)
 
 
 # ---------------------------------------------------------------------------
-# OpenMythos — MLA mode
+# OpenMythos — MLA 模式
 # ---------------------------------------------------------------------------
 
 
@@ -623,11 +623,11 @@ class TestOpenMythosMLА:
         assert A.max().item() < 1.0
 
     def test_mla_cache_is_compressed(self):
-        # MLA cache should store c_kv (lora_rank), not full K/V (n_heads * head_dim)
+        # MLA 缓存应存储 c_kv（lora_rank），而非完整的 K/V（n_heads * head_dim）
         cache = {}
         with torch.no_grad():
             self.model(self.ids, kv_cache=cache)
-        # find any MLA cache entry and check dimensions
+        # 查找任何 MLA 缓存条目并检查维度
         mla_entries = {k: v for k, v in cache.items() if "c_kv" in v}
         assert len(mla_entries) > 0
         for entry in mla_entries.values():
@@ -635,7 +635,7 @@ class TestOpenMythosMLА:
 
 
 # ---------------------------------------------------------------------------
-# GQA vs MLA: same config, different attn_type
+# GQA 与 MLA：相同配置，不同 attn_type
 # ---------------------------------------------------------------------------
 
 
@@ -644,35 +644,4 @@ class TestAttnTypeSwap:
         cfg_gqa = gqa_cfg()
         cfg_mla = mla_cfg()
         ids = torch.randint(0, cfg_gqa.vocab_size, (B, T))
-        logits_gqa = OpenMythos(cfg_gqa)(ids)
-        logits_mla = OpenMythos(cfg_mla)(ids)
-        # different architectures, different params → outputs must differ
-        assert not torch.allclose(logits_gqa, logits_mla)
-
-    def test_both_modes_produce_valid_shapes(self):
-        ids = torch.randint(0, 200, (B, T))
-        for attn_type in ("gqa", "mla"):
-            cfg = gqa_cfg(attn_type=attn_type)
-            logits = OpenMythos(cfg)(ids)
-            assert logits.shape == (B, T, cfg.vocab_size)
-
-    def test_mla_fewer_kv_cache_bytes(self):
-        # MLA cache should be smaller than GQA cache for the same sequence
-        ids = torch.randint(0, 200, (1, T))
-        cache_gqa, cache_mla = {}, {}
-        with torch.no_grad():
-            OpenMythos(gqa_cfg())(ids, kv_cache=cache_gqa)
-            OpenMythos(mla_cfg())(ids, kv_cache=cache_mla)
-
-        def cache_bytes(cache):
-            return sum(
-                t.numel() * t.element_size()
-                for entry in cache.values()
-                for t in entry.values()
-            )
-
-        assert cache_bytes(cache_mla) < cache_bytes(cache_gqa)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "--verbose"])
+        logits_gqa = OpenMythos

@@ -1,43 +1,43 @@
-# Recommended Training Datasets
+# 推荐训练数据集
 
-| Dataset | HuggingFace | Tokens | License | Use |
+| 数据集 | HuggingFace | Token 数量 | 许可证 | 用途 |
 |---|---|---|---|---|
-| FineWeb-Edu | [HuggingFaceFW/fineweb-edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) | 1.3T | Apache 2.0 | Primary pretraining |
-| OpenHermes 2.5 | [teknium/OpenHermes-2.5](https://huggingface.co/datasets/teknium/OpenHermes-2.5) | ~1M samples | Apache 2.0 | Instruction tuning (~5% mix) |
-| OpenWebMath | [open-web-math/open-web-math](https://huggingface.co/datasets/open-web-math/open-web-math) | 14.7B | ODC-By | Math/reasoning boost |
+| FineWeb-Edu | [HuggingFaceFW/fineweb-edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) | 1.3T | Apache 2.0 | 主要预训练 |
+| OpenHermes 2.5 | [teknium/OpenHermes-2.5](https://huggingface.co/datasets/teknium/OpenHermes-2.5) | ~100万样本 | Apache 2.0 | 指令微调（~5% 混合） |
+| OpenWebMath | [open-web-math/open-web-math](https://huggingface.co/datasets/open-web-math/open-web-math) | 14.7B | ODC-By | 数学/推理增强 |
 
 ---
 
-## Primary Pretraining
+## 主要预训练
 
 ### FineWeb-Edu
-- **HuggingFace:** `HuggingFaceFW/fineweb-edu`
-- **Size:** 1.3T tokens
-- **License:** Apache 2.0
-- **Why:** Web text filtered for educational quality. Outperforms The Pile, C4, and RefinedWeb on downstream benchmarks. Already deduplicated and cleaned.
-- **Start with:** `sample-10BT` to validate your pipeline, then `sample-100BT` or the full corpus for a serious run.
+- **HuggingFace：** `HuggingFaceFW/fineweb-edu`
+- **规模：** 1.3T tokens
+- **许可证：** Apache 2.0
+- **选择理由：** 经过教育质量过滤的网页文本。在下游基准测试中优于 The Pile、C4 和 RefinedWeb。已完成去重和清洗。
+- **建议起步：** 先用 `sample-10BT` 验证你的训练流水线，然后使用 `sample-100BT` 或完整语料库进行正式训练。
 
-## Supplementary
+## 补充数据集
 
 ### OpenHermes 2.5
-- **HuggingFace:** `teknium/OpenHermes-2.5`
-- **Size:** ~1M instruction samples
-- **License:** Apache 2.0
-- **Why:** High-quality instruction-following data. Mix in ~5% by token count on top of FineWeb-Edu to improve instruction following without degrading general capability.
+- **HuggingFace：** `teknium/OpenHermes-2.5`
+- **规模：** ~100万条指令样本
+- **许可证：** Apache 2.0
+- **选择理由：** 高质量的指令遵循数据。在 FineWeb-Edu 基础上按 token 数量混入约 5%，可提升指令遵循能力而不降低通用能力。
 
 ### OpenWebMath
-- **HuggingFace:** `open-web-math/open-web-math`
-- **Size:** ~14.7B tokens
-- **License:** ODC-By
-- **Why:** Math-focused web text. Add if you want stronger quantitative and symbolic reasoning. Particularly useful for the 10B+ variants where reasoning depth matters.
+- **HuggingFace：** `open-web-math/open-web-math`
+- **规模：** ~14.7B tokens
+- **许可证：** ODC-By
+- **选择理由：** 数学导向的网页文本。如果你希望增强定量和符号推理能力，可以添加此数据集。对于 10B+ 变体尤其有用，因为推理深度在这些规模下更为重要。
 
-## Token Budget Recommendations
+## Token 预算建议
 
-| Variant | Chinchilla-optimal | Recommended (looped) |
+| 变体 | Chinchilla 最优 | 推荐（循环架构） |
 |---|---|---|
 | 1B | ~20B tokens | ~10–15B tokens |
 | 3B | ~60B tokens | ~30–40B tokens |
 | 10B | ~200B tokens | ~100–150B tokens |
 | 50B+ | ~1T+ tokens | ~500B+ tokens |
 
-The looped architecture is more sample-efficient than a standard transformer — same validation loss is reachable with fewer tokens due to faster convergence. The "recommended (looped)" column reflects this and is based on the Tiny Shakespeare result where OpenMythos reached equivalent loss ~2.5× faster than nanoGPT.
+循环架构比标准 Transformer 具有更高的样本效率——由于收敛更快，用更少的 token 即可达到相同的验证损失。"推荐（循环架构）"列反映了这一点，基于 Tiny Shakespeare 实验结果，OpenMythos 达到等效损失的速度比 nanoGPT 快约 2.5 倍。

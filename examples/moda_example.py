@@ -3,15 +3,15 @@ from open_mythos.moda import MoDAConfig, MoDAModel
 
 
 # ---------------------------------------------------------------------------
-# Smoke test
+# 冒烟测试
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     torch.manual_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"设备: {device}")
 
-    # Tiny config: 4 layers, 8 routed experts, top-2
+    # 微型配置: 4 层, 8 个路由专家, top-2
     cfg = MoDAConfig(
         vocab_size=512,
         d_model=128,
@@ -20,8 +20,8 @@ if __name__ == "__main__":
         n_heads_kv=2,
         head_dim=32,
         max_seq_len=64,
-        # MoE: 2 shared + 8 routed, activate top-2
-        # (2+2)*64 = 256 ≈ equivalent to dense SwiGLU hidden~256
+        # MoE: 2 个共享 + 8 个路由专家, 激活 top-2
+        # (2+2)*64 = 256 ≈ 等效于密集 SwiGLU hidden~256
         n_shared_experts=2,
         n_routed_experts=8,
         n_activated_experts=2,
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     )
 
     model = MoDAModel(cfg).to(device)
-    print(f"Parameters: {model.num_parameters():,}")
+    print(f"参数量: {model.num_parameters():,}")
     print(model)
 
     B, T = 2, 32
@@ -40,12 +40,12 @@ if __name__ == "__main__":
 
     logits, loss = model(input_ids, labels)
     assert logits.shape == (B, T, cfg.vocab_size)
-    print(f"Logits shape : {logits.shape}")
-    print(f"Loss (LM + balance): {loss.item():.4f}")
+    print(f"Logits 形状 : {logits.shape}")
+    print(f"损失 (LM + 均衡): {loss.item():.4f}")
 
     loss.backward()
 
-    # Verify gradients
+    # 验证梯度
     last_writes = {
         f"blocks.{cfg.n_layers - 1}.k_write.weight",
         f"blocks.{cfg.n_layers - 1}.v_write.weight",
@@ -56,18 +56,18 @@ if __name__ == "__main__":
         if p.grad is None and name not in last_writes
     ]
     if missing:
-        print(f"WARNING — unexpected missing gradients: {missing}")
+        print(f"警告 — 意外缺失梯度的参数: {missing}")
     else:
-        print("All parameters received gradients (excluding last-block writes).")
+        print("所有参数均已接收梯度（排除最后一层的写入投影）。")
 
-    # Spot-check: MoE gate weights must receive gradients (through balance loss P_i)
+    # 抽查: MoE 门控权重必须接收梯度（通过均衡损失 P_i）
     gate0_grad = model.blocks[0].moe.gate.weight.grad
-    assert gate0_grad is not None, "blocks[0].moe.gate.weight has no gradient!"
-    print(f"blocks[0].moe.gate.weight grad norm : {gate0_grad.norm().item():.6f}")
+    assert gate0_grad is not None, "blocks[0].moe.gate.weight 没有梯度！"
+    print(f"blocks[0].moe.gate.weight 梯度范数 : {gate0_grad.norm().item():.6f}")
 
-    # Spot-check: depth write projections gradient flows from layer ≥ 1 depth reads
+    # 抽查: 深度写入投影的梯度从第 ≥ 1 层的深度读取流回
     k0_grad = model.blocks[0].k_write.weight.grad
-    assert k0_grad is not None, "blocks[0].k_write.weight has no gradient!"
-    print(f"blocks[0].k_write.weight grad norm  : {k0_grad.norm().item():.6f}")
+    assert k0_grad is not None, "blocks[0].k_write.weight 没有梯度！"
+    print(f"blocks[0].k_write.weight 梯度范数  : {k0_grad.norm().item():.6f}")
 
-    print("Smoke test passed.")
+    print("冒烟测试通过。")

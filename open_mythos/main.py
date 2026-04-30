@@ -16,90 +16,90 @@ except ImportError:
 @dataclass
 class MythosConfig:
     """
-    Hyperparameter configuration for OpenMythos.
+    OpenMythos 超参数配置。
 
-    Core:
-        vocab_size      -- token vocabulary size
-        dim             -- model hidden dimension
-        n_heads         -- number of query attention heads
-        n_kv_heads      -- number of key/value heads (GQA; ignored by MLA)
-        max_seq_len     -- maximum sequence length for RoPE precomputation
-        max_loop_iters  -- default recurrent loop depth T at inference
-        prelude_layers  -- number of standard transformer layers before the loop
-        coda_layers     -- number of standard transformer layers after the loop
+    核心参数:
+        vocab_size      -- 词汇表大小
+        dim             -- 模型隐藏维度
+        n_heads         -- 查询注意力头数
+        n_kv_heads      -- 键/值头数（GQA；MLA 忽略此参数）
+        max_seq_len     -- RoPE 预计算的最大序列长度
+        max_loop_iters  -- 推理时默认的递归循环深度 T
+        prelude_layers  -- 循环前的标准 Transformer 层数
+        coda_layers     -- 循环后的标准 Transformer 层数
 
-    Attention (attn_type selects between the two):
-        attn_type       -- "gqa" for Grouped Query Attention, "mla" for Multi-Latent Attention
-        kv_lora_rank    -- [MLA] compressed KV latent dimension stored in the cache
-        q_lora_rank     -- [MLA] compressed Q latent dimension
-        qk_rope_head_dim-- [MLA] per-head dims that receive RoPE
-        qk_nope_head_dim-- [MLA] per-head dims without positional encoding
-        v_head_dim      -- [MLA] per-head value dimension
+    注意力（attn_type 在两者间选择）:
+        attn_type       -- "gqa" 为分组查询注意力，"mla" 为多潜在注意力
+        kv_lora_rank    -- [MLA] 缓存中存储的压缩 KV 潜在维度
+        q_lora_rank     -- [MLA] 压缩 Q 潜在维度
+        qk_rope_head_dim-- [MLA] 接收 RoPE 的每头维度
+        qk_nope_head_dim-- [MLA] 不含位置编码的每头维度
+        v_head_dim      -- [MLA] 每头值维度
 
-    MoE FFN (used inside the recurrent block):
-        n_experts       -- total number of routed expert FFNs
-        n_shared_experts-- number of always-active shared experts
-        n_experts_per_tok-- top-K experts selected per token by the router
-        expert_dim      -- hidden dimension inside each fine-grained expert
+    MoE FFN（在递归块内部使用）:
+        n_experts       -- 路由专家 FFN 总数
+        n_shared_experts-- 始终激活的共享专家数
+        n_experts_per_tok-- 路由器为每个 token 选择的 Top-K 专家数
+        expert_dim      -- 每个细粒度专家内部的隐藏维度
 
-    Other:
-        act_threshold   -- ACT halting threshold (cumulative probability to stop looping)
-        rope_theta      -- RoPE base frequency
-        lora_rank       -- rank of the per-loop depth-wise LoRA adapter
+    其他:
+        act_threshold   -- ACT 停止阈值（累积概率达到此值时停止循环）
+        rope_theta      -- RoPE 基础频率
+        lora_rank       -- 每循环深度级 LoRA 适配器的秩
     """
 
     vocab_size: int = 32000
     dim: int = 2048
     n_heads: int = 16
-    n_kv_heads: int = 4  # GQA: fewer KV heads than Q heads
+    n_kv_heads: int = 4  # GQA：KV 头数少于 Q 头数
     max_seq_len: int = 4096
-    max_loop_iters: int = 16  # T — recurrent depth at inference
+    max_loop_iters: int = 16  # T — 推理时的递归深度
     prelude_layers: int = 2
     coda_layers: int = 2
-    # Attention type: "gqa" | "mla"
+    # 注意力类型: "gqa" | "mla"
     attn_type: str = "mla"
-    # MLA params (only used when attn_type="mla")
-    kv_lora_rank: int = 512  # compressed KV latent cached instead of full K/V
-    q_lora_rank: int = 1536  # compressed Q latent dim
-    qk_rope_head_dim: int = 64  # per-head dims that receive RoPE
-    qk_nope_head_dim: int = 128  # per-head dims without RoPE
-    v_head_dim: int = 128  # per-head value dim
-    # MoE
+    # MLA 参数（仅在 attn_type="mla" 时使用）
+    kv_lora_rank: int = 512  # 压缩 KV 潜在表示，替代完整 K/V 缓存
+    q_lora_rank: int = 1536  # 压缩 Q 潜在维度
+    qk_rope_head_dim: int = 64  # 接收 RoPE 的每头维度
+    qk_nope_head_dim: int = 128  # 不含 RoPE 的每头维度
+    v_head_dim: int = 128  # 每头值维度
+    # 混合专家
     n_experts: int = 64
     n_shared_experts: int = 2
-    n_experts_per_tok: int = 4  # top-K routed
-    expert_dim: int = 512  # fine-grained: dim // (n_experts // n_experts_per_tok)
-    # ACT halting
+    n_experts_per_tok: int = 4  # Top-K 路由
+    expert_dim: int = 512  # 细粒度: dim // (n_experts // n_experts_per_tok)
+    # ACT 停止
     act_threshold: float = 0.99
-    # RoPE
+    # RoPE 旋转位置编码
     rope_theta: float = 500000.0
-    # LoRA depth adaptation
+    # LoRA 深度适配
     lora_rank: int = 16
-    # Maximum tokens to generate per forward pass
+    # 每次前向传播生成的最大 token 数
     max_output_tokens: int = 4096
-    # Dropout (set 0.0 to disable; 0.1 is standard for pretraining)
+    # Dropout（设为 0.0 禁用；0.1 为预训练标准值）
     dropout: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# RMSNorm
+# RMSNorm 均方根归一化
 # ---------------------------------------------------------------------------
 
 
 class RMSNorm(nn.Module):
     """
-    Root Mean Square Layer Normalization (Zhang & Sennrich, 2019).
+    均方根层归一化（Zhang & Sennrich, 2019）。
 
-    Normalizes by the RMS of the input rather than mean+variance, with a
-    learned per-channel rescaling weight. No bias term. Used in place of
-    LayerNorm throughout the model for stability and efficiency.
+    通过输入的均方根（而非均值+方差）进行归一化，带有可学习的逐通道
+    缩放权重。无偏置项。在整个模型中替代 LayerNorm 使用，以提高
+    稳定性和效率。
     """
 
     def __init__(self, dim: int, eps: float = 1e-6):
         """
-        Args:
-            dim -- feature dimension to normalize over
-            eps -- small constant added before sqrt for numerical stability
+        参数:
+            dim -- 归一化的特征维度
+            eps -- sqrt 前添加的小常数，用于数值稳定性
         """
         super().__init__()
         self.eps = eps
@@ -107,17 +107,17 @@ class RMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x -- input tensor of shape (..., dim)
-        Returns:
-            RMS-normalized tensor of the same shape, rescaled by self.weight
+        参数:
+            x -- 形状为 (..., dim) 的输入张量
+        返回:
+            相同形状的 RMS 归一化张量，经 self.weight 缩放
         """
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         return x * rms * self.weight
 
 
 # ---------------------------------------------------------------------------
-# RoPE
+# RoPE 旋转位置编码
 # ---------------------------------------------------------------------------
 
 
@@ -125,18 +125,18 @@ def precompute_rope_freqs(
     dim: int, max_len: int, theta: float = 500000.0
 ) -> torch.Tensor:
     """
-    Precompute complex-valued RoPE rotation matrices for positions 0..max_len-1.
+    预计算位置 0..max_len-1 的复数值 RoPE 旋转矩阵。
 
-    Each position gets a complex phasor e^{i·m·θ_k} for each frequency pair k.
-    Stored as a complex tensor so that rotation is a single pointwise multiply.
+    每个位置对每个频率对 k 获得一个复数相量 e^{i·m·θ_k}。
+    存储为复数张量，使旋转操作仅需一次逐点乘法。
 
-    Args:
-        dim     -- head dimension (must be even); frequencies are computed for dim//2 pairs
-        max_len -- maximum sequence length to precompute
-        theta   -- RoPE base (higher = slower frequency decay; 500k is the LLaMA-3 default)
+    参数:
+        dim     -- 头维度（必须为偶数）；为 dim//2 对频率计算
+        max_len -- 预计算的最大序列长度
+        theta   -- RoPE 基础频率（越高 = 频率衰减越慢；500k 为 LLaMA-3 默认值）
 
-    Returns:
-        complex64 tensor of shape (max_len, dim//2)
+    返回:
+        形状为 (max_len, dim//2) 的 complex64 张量
     """
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     t = torch.arange(max_len, dtype=torch.float32)
@@ -146,20 +146,19 @@ def precompute_rope_freqs(
 
 def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     """
-    Apply rotary positional embeddings to query or key tensors.
+    将旋转位置编码应用于查询或键张量。
 
-    Interprets each pair of adjacent features as a 2D complex number and
-    multiplies by the precomputed phasor for that position, rotating the
-    representation in the complex plane without changing its norm.
+    将每对相邻特征解释为二维复数，并与该位置预计算的相量相乘，
+    在复平面上旋转表示而不改变其范数。
 
-    Args:
-        x         -- tensor of shape (B, T, H, head_dim); head_dim must be even
-        freqs_cis -- precomputed complex frequencies of shape (T, head_dim//2),
-                     already sliced to exactly the positions being processed
-                     (caller is responsible for correct start_pos offset)
+    参数:
+        x         -- 形状为 (B, T, H, head_dim) 的张量；head_dim 必须为偶数
+        freqs_cis -- 形状为 (T, head_dim//2) 的预计算复数频率，
+                     已切片到正在处理的确切位置
+                     （调用者负责正确的 start_pos 偏移）
 
-    Returns:
-        Rotated tensor of the same shape and dtype as x
+    返回:
+        与 x 形状和数据类型相同的旋转后张量
     """
     xc = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
     return (
@@ -170,32 +169,31 @@ def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Grouped Query Attention with KV cache
+# 分组查询注意力（带 KV 缓存）
 # ---------------------------------------------------------------------------
 
 
 class GQAttention(nn.Module):
     """
-    Grouped Query Attention (Ainslie et al., 2023) with Flash Attention 2 (Dao et al., 2023).
+    分组查询注意力（Ainslie et al., 2023），配合 Flash Attention 2（Dao et al., 2023）。
 
-    Uses fewer KV heads than Q heads (n_kv_heads < n_heads). Each KV head is
-    shared across n_heads // n_kv_heads query heads, reducing the KV cache size
-    by that factor while keeping full query expressiveness.
+    使用比 Q 头更少的 KV 头（n_kv_heads < n_heads）。每个 KV 头在
+    n_heads // n_kv_heads 个查询头之间共享，按该因子减少 KV 缓存大小，
+    同时保持完整的查询表达能力。
 
-    When flash-attn is installed, uses flash_attn_func which handles GQA natively
-    (no KV head expansion needed) and is IO-bound-optimal. Inputs are cast to
-    bfloat16 for flash_attn and restored to the original dtype afterward.
-    Falls back to manual scaled dot-product attention when flash-attn is absent.
+    安装 flash-attn 时，使用原生支持 GQA 的 flash_attn_func
+    （无需 KV 头扩展），且为 IO 最优。输入转换为 bfloat16 传入
+    flash_attn，之后恢复原始数据类型。
+    未安装 flash-attn 时回退到手动缩放点积注意力。
 
-    RoPE is applied to both Q and K. K and V are stored in kv_cache after
-    RoPE application so that cached values are already positionally encoded and
-    do not need to be re-rotated on retrieval.
+    RoPE 同时应用于 Q 和 K。K 和 V 在 RoPE 应用后存入 kv_cache，
+    因此缓存值已包含位置编码，检索时无需重新旋转。
     """
 
     def __init__(self, cfg: MythosConfig):
         """
-        Args:
-            cfg -- MythosConfig; uses dim, n_heads, n_kv_heads
+        参数:
+            cfg -- MythosConfig；使用 dim、n_heads、n_kv_heads
         """
         super().__init__()
         self.n_heads = cfg.n_heads
@@ -218,15 +216,15 @@ class GQAttention(nn.Module):
         cache_key: str = "default",
     ) -> torch.Tensor:
         """
-        Args:
-            x         -- input of shape (B, T, dim)
-            freqs_cis -- RoPE frequencies for head_dim, shape (T, head_dim//2)
-            mask      -- additive causal mask of shape (1, 1, T, S) or None
-            kv_cache  -- dict mutated in-place; stores {"k": ..., "v": ...} per cache_key
-            cache_key -- unique key identifying this layer in the cache dict
+        参数:
+            x         -- 形状为 (B, T, dim) 的输入
+            freqs_cis -- head_dim 的 RoPE 频率，形状 (T, head_dim//2)
+            mask      -- 形状为 (1, 1, T, S) 的加性因果掩码或 None
+            kv_cache  -- 原地修改的字典；按 cache_key 存储 {"k": ..., "v": ...}
+            cache_key -- 在缓存字典中标识此层的唯一键
 
-        Returns:
-            Output tensor of shape (B, T, dim)
+        返回:
+            形状为 (B, T, dim) 的输出张量
         """
         B, T, _ = x.shape
         q = self.wq(x).view(B, T, self.n_heads, self.head_dim)
@@ -243,10 +241,10 @@ class GQAttention(nn.Module):
             kv_cache[cache_key] = {"k": k.detach(), "v": v.detach()}
 
         if _HAS_FLASH_ATTN:
-            # flash_attn_func expects (B, T, H, head_dim) — GQA is handled natively
-            # (n_kv_heads < n_heads is supported without repeat_interleave).
-            # causal=True when mask is present (full-sequence prefill/training);
-            # causal=False for single-token decode where T=1 and mask is None.
+            # flash_attn_func 期望 (B, T, H, head_dim) — 原生支持 GQA
+            # （n_kv_heads < n_heads 无需 repeat_interleave）。
+            # 有掩码时 causal=True（全序列预填充/训练）；
+            # 单 token 解码（T=1 且 mask 为 None）时 causal=False。
             orig_dtype = q.dtype
             q = q.to(torch.bfloat16)
             k = k.to(torch.bfloat16)
@@ -257,7 +255,7 @@ class GQAttention(nn.Module):
             )
             out = out.to(orig_dtype).contiguous().view(B, T, -1)
         else:
-            # Fallback: manual scaled dot-product with explicit KV head expansion.
+            # 回退：手动缩放点积注意力，显式扩展 KV 头。
             k = k.repeat_interleave(self.groups, dim=2)
             v = v.repeat_interleave(self.groups, dim=2)
             q = q.transpose(1, 2)  # (B, H, T, head_dim)
@@ -277,43 +275,42 @@ class GQAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Multi-Latent Attention (DeepSeek-V2 style)
+# 多潜在注意力（DeepSeek-V2 风格）
 # ---------------------------------------------------------------------------
 
 
 class MLAttention(nn.Module):
     """
-    Multi-Latent Attention (DeepSeek-V2, 2024).
+    多潜在注意力（DeepSeek-V2, 2024）。
 
-    The key insight: instead of caching full K and V tensors (each of size
-    n_heads × head_dim per token), MLA compresses the KV path through a
-    low-rank latent c_kv and only caches that plus the RoPE keys. K_nope and
-    V are reconstructed from c_kv at each decoding step, trading a cheap
-    linear projection for dramatically smaller cache memory.
+    核心思想：不缓存完整的 K 和 V 张量（每个 token 大小为
+    n_heads × head_dim），MLA 通过低秩潜在表示 c_kv 压缩 KV 路径，
+    仅缓存该表示加上 RoPE 键。K_nope 和 V 在每个解码步骤从 c_kv
+    重建，用廉价的线性投影换取显著更小的缓存内存。
 
-    Q path:
+    Q 路径:
         x → q_down (dim→q_lora_rank) → q_norm
-          → q_up_nope (q_lora_rank → n_heads×qk_nope_head_dim)  [no RoPE]
-          → q_up_rope (q_lora_rank → n_heads×qk_rope_head_dim)  [RoPE applied]
-        q = cat(q_nope, q_rope)  per head
+          → q_up_nope (q_lora_rank → n_heads×qk_nope_head_dim)  [无 RoPE]
+          → q_up_rope (q_lora_rank → n_heads×qk_rope_head_dim)  [应用 RoPE]
+        q = cat(q_nope, q_rope)  每头
 
-    KV path:
+    KV 路径:
         x → kv_down (dim → kv_lora_rank + qk_rope_head_dim)
-          splits into c_kv (latent, cached) and k_rope_raw (shared across heads)
-        k_rope = RoPE(expand(k_rope_raw))  — applied before caching
-        c_kv → kv_norm → kv_up → [k_nope | v]  — reconstructed each step
-        k = cat(k_nope, k_rope)  per head
+          分割为 c_kv（潜在表示，缓存）和 k_rope_raw（跨头共享）
+        k_rope = RoPE(expand(k_rope_raw))  — 缓存前应用
+        c_kv → kv_norm → kv_up → [k_nope | v]  — 每步重建
+        k = cat(k_nope, k_rope)  每头
 
-    Cache stores: c_kv (kv_lora_rank) + k_rope (n_heads × qk_rope_head_dim),
-    versus full GQA cache: n_kv_heads × head_dim × 2.  At production scale this
-    is roughly a 10–20× memory reduction.
+    缓存存储: c_kv (kv_lora_rank) + k_rope (n_heads × qk_rope_head_dim)，
+    对比完整 GQA 缓存: n_kv_heads × head_dim × 2。在生产规模下
+    约减少 10-20 倍内存。
     """
 
     def __init__(self, cfg: MythosConfig):
         """
-        Args:
-            cfg -- MythosConfig; uses dim, n_heads, kv_lora_rank, q_lora_rank,
-                   qk_rope_head_dim, qk_nope_head_dim, v_head_dim
+        参数:
+            cfg -- MythosConfig；使用 dim、n_heads、kv_lora_rank、q_lora_rank、
+                   qk_rope_head_dim、qk_nope_head_dim、v_head_dim
         """
         super().__init__()
         self.n_heads = cfg.n_heads
@@ -323,7 +320,7 @@ class MLAttention(nn.Module):
         self.v_dim = cfg.v_head_dim
         self.q_head_dim = cfg.qk_nope_head_dim + cfg.qk_rope_head_dim
 
-        # Q compression
+        # Q 压缩
         self.q_down = nn.Linear(cfg.dim, cfg.q_lora_rank, bias=False)
         self.q_norm = RMSNorm(cfg.q_lora_rank)
         self.q_up_nope = nn.Linear(
@@ -333,7 +330,7 @@ class MLAttention(nn.Module):
             cfg.q_lora_rank, cfg.n_heads * cfg.qk_rope_head_dim, bias=False
         )
 
-        # KV compression: output is [c_kv | k_rope_raw] concatenated
+        # KV 压缩：输出为 [c_kv | k_rope_raw] 拼接
         self.kv_down = nn.Linear(
             cfg.dim, cfg.kv_lora_rank + cfg.qk_rope_head_dim, bias=False
         )
@@ -356,15 +353,15 @@ class MLAttention(nn.Module):
         cache_key: str = "default",
     ) -> torch.Tensor:
         """
-        Args:
-            x         -- input of shape (B, T, dim)
-            freqs_cis -- RoPE frequencies sized for qk_rope_head_dim, shape (T, rope_dim//2)
-            mask      -- additive causal mask of shape (1, 1, T, S) or None
-            kv_cache  -- dict mutated in-place; stores {"c_kv": ..., "k_rope": ...}
-            cache_key -- unique key identifying this layer in the cache dict
+        参数:
+            x         -- 形状为 (B, T, dim) 的输入
+            freqs_cis -- qk_rope_head_dim 大小的 RoPE 频率，形状 (T, rope_dim//2)
+            mask      -- 形状为 (1, 1, T, S) 的加性因果掩码或 None
+            kv_cache  -- 原地修改的字典；存储 {"c_kv": ..., "k_rope": ...}
+            cache_key -- 在缓存字典中标识此层的唯一键
 
-        Returns:
-            Output tensor of shape (B, T, dim)
+        返回:
+            形状为 (B, T, dim) 的输出张量
         """
         B, T, _ = x.shape
 
@@ -379,8 +376,8 @@ class MLAttention(nn.Module):
         kv_raw = self.kv_down(x)
         c_kv = kv_raw[..., : self.kv_lora_rank]  # (B, T, lora_rank)  ← cached
         k_rope = kv_raw[..., self.kv_lora_rank :]  # (B, T, rope_dim)
-        # expand rope keys across heads and apply RoPE before caching so
-        # retrieved keys are already positionally encoded
+        # 跨头扩展 rope 键并在缓存前应用 RoPE，
+        # 使检索到的键已包含位置编码
         k_rope = (
             k_rope.unsqueeze(2)
             .expand(B, T, self.n_heads, self.qk_rope_dim)
@@ -394,16 +391,16 @@ class MLAttention(nn.Module):
                 k_rope = torch.cat([kv_cache[cache_key]["k_rope"], k_rope], dim=1)
             kv_cache[cache_key] = {"c_kv": c_kv.detach(), "k_rope": k_rope.detach()}
 
-        S = c_kv.shape[1]  # full sequence length including cache
+        S = c_kv.shape[1]  # 包含缓存的完整序列长度
 
-        # reconstruct K_nope and V from latent (not cached, recomputed each step)
+        # 从潜在表示重建 K_nope 和 V（不缓存，每步重新计算）
         kv = self.kv_up(self.kv_norm(c_kv))  # (B, S, H*(nope+v))
         kv = kv.view(B, S, self.n_heads, self.qk_nope_dim + self.v_dim)
         k_nope = kv[..., : self.qk_nope_dim]  # (B, S, H, nope)
         v = kv[..., self.qk_nope_dim :]  # (B, S, H, v_dim)
         k = torch.cat([k_nope, k_rope], dim=-1)  # (B, S, H, nope+rope)
 
-        # attention
+        # 注意力计算
         q = q.transpose(1, 2)  # (B, H, T, q_head_dim)
         k = k.transpose(1, 2)  # (B, H, S, q_head_dim)
         v = v.transpose(1, 2)  # (B, H, S, v_dim)
@@ -419,24 +416,24 @@ class MLAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek-style MoE FFN
+# DeepSeek 风格混合专家 FFN
 # ---------------------------------------------------------------------------
 
 
 class Expert(nn.Module):
     """
-    Single SwiGLU feed-forward expert.
+    单个 SwiGLU 前馈专家。
 
-    Implements the gated linear unit variant: output = down(silu(gate(x)) * up(x)).
-    Used both as individual routed experts inside MoEFFN and as the standard dense
-    FFN in prelude/coda blocks (where expert_dim = dim * 4 // 3).
+    实现门控线性单元变体：output = down(silu(gate(x)) * up(x))。
+    既用作 MoEFFN 内部的单个路由专家，也用作前奏/尾声块中的标准
+    密集 FFN（其中 expert_dim = dim * 4 // 3）。
     """
 
     def __init__(self, dim: int, expert_dim: int):
         """
-        Args:
-            dim        -- input and output feature dimension
-            expert_dim -- inner (hidden) dimension of the expert
+        参数:
+            dim        -- 输入和输出特征维度
+            expert_dim -- 专家内部（隐藏）维度
         """
         super().__init__()
         self.gate = nn.Linear(dim, expert_dim, bias=False)
@@ -445,35 +442,35 @@ class Expert(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x -- input of shape (..., dim)
-        Returns:
-            Tensor of shape (..., dim)
+        参数:
+            x -- 形状为 (..., dim) 的输入
+        返回:
+            形状为 (..., dim) 的张量
         """
         return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
 class MoEFFN(nn.Module):
     """
-    Fine-grained Mixture-of-Experts FFN (DeepSeekMoE, Dai et al., 2024).
+    细粒度混合专家 FFN（DeepSeekMoE, Dai et al., 2024）。
 
-    Two classes of experts:
-    - Routed experts: n_experts small FFNs; each token activates top-K of them
-      via a learned router. A per-expert bias on router logits is updated during
-      training to keep load balanced across experts without distorting the loss.
-    - Shared experts: n_shared_experts larger FFNs always activated for every token,
-      absorbing common cross-domain patterns (syntax, basic reasoning) that would
-      otherwise be redundantly learned by many routed experts.
+    两类专家:
+    - 路由专家：n_experts 个小型 FFN；每个 token 通过学习的路由器激活其中
+      Top-K 个。路由器 logits 上的每专家偏置在训练中更新，以保持专家间
+      负载均衡而不扭曲损失。
+    - 共享专家：n_shared_experts 个较大的 FFN，对每个 token 始终激活，
+      吸收跨领域的通用模式（语法、基础推理），否则这些模式会被多个
+      路由专家冗余学习。
 
-    Total activated parameters per token ≈ topk/n_experts of routed + all shared,
-    keeping compute sparse while the total parameter count stays large.
+    每 token 激活的总参数 ≈ 路由容量的 topk/n_experts + 所有共享容量，
+    保持计算稀疏的同时总参数量保持较大。
     """
 
     def __init__(self, cfg: MythosConfig):
         """
-        Args:
-            cfg -- MythosConfig; uses n_experts, n_shared_experts, n_experts_per_tok,
-                   dim, expert_dim
+        参数:
+            cfg -- MythosConfig；使用 n_experts、n_shared_experts、n_experts_per_tok、
+                   dim、expert_dim
         """
         super().__init__()
         self.n_experts = cfg.n_experts
@@ -481,7 +478,7 @@ class MoEFFN(nn.Module):
         self.topk = cfg.n_experts_per_tok
 
         self.router = nn.Linear(cfg.dim, cfg.n_experts, bias=False)
-        # load-balancing bias adjusted externally during training; not a gradient param
+        # 训练期间外部调整的负载均衡偏置；非梯度参数
         self.register_buffer("router_bias", torch.zeros(cfg.n_experts))
 
         self.routed_experts = nn.ModuleList(
@@ -496,26 +493,24 @@ class MoEFFN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x -- input of shape (B, T, dim)
-        Returns:
-            Tensor of shape (B, T, dim); shared expert outputs are summed on top
-            of the weighted routed expert outputs
+        参数:
+            x -- 形状为 (B, T, dim) 的输入
+        返回:
+            形状为 (B, T, dim) 的张量；共享专家输出叠加在加权路由专家输出之上
         """
         B, T, D = x.shape
         flat = x.view(B * T, D)
 
-        # Aux-loss-free load balancing (DeepSeek-V3): the bias shifts only the
-        # selection of which experts fire so underused experts are picked more,
-        # but the gating weights come from unbiased softmax scores so the bias
-        # never shows up in the gradient.
+        # 无辅助损失的负载均衡（DeepSeek-V3）：偏置仅影响专家选择，
+        # 使利用不足的专家被更多选中，但门控权重来自无偏的 softmax 分数，
+        # 因此偏置不会出现在
         logits = self.router(flat)  # (B*T, n_experts), unbiased
         scores = F.softmax(logits, dim=-1)
         _, topk_idx = (logits + self.router_bias).topk(self.topk, dim=-1)
         topk_scores = scores.gather(-1, topk_idx)
         topk_scores = topk_scores / topk_scores.sum(dim=-1, keepdim=True)  # renorm
 
-        # routed expert dispatch (token-level scatter)
+        # 路由专家分发（token 级散射）
         out = torch.zeros_like(flat)
         for i in range(self.topk):
             expert_ids = topk_idx[:, i]
@@ -526,7 +521,7 @@ class MoEFFN(nn.Module):
                     continue
                 out[mask] += token_scores[mask] * self.routed_experts[eid](flat[mask])
 
-        # shared experts always fire for every token
+        # 共享专家对每个 token 始终激活
         for shared in self.shared_experts:
             out = out + shared(flat)
 
@@ -534,7 +529,7 @@ class MoEFFN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Loop-index RoPE (differentiates recurrent block across iterations)
+# 循环索引 RoPE（区分递归块的不同迭代）
 # ---------------------------------------------------------------------------
 
 
@@ -542,22 +537,21 @@ def loop_index_embedding(
     h: torch.Tensor, loop_t: int, loop_dim: int, theta: float = 10000.0
 ) -> torch.Tensor:
     """
-    Inject a sinusoidal loop-index signal into the first loop_dim channels of h.
+    将正弦循环索引信号注入 h 的前 loop_dim 个通道。
 
-    Analogous to RoPE for sequence position, but applied over recurrence depth
-    instead of token position. Without this, the shared recurrent block weights
-    must handle both early-stage pattern-matching and late-stage refinement with
-    no signal distinguishing which loop they are on. Adding the loop index lets
-    the same parameters implement functionally distinct operations per iteration.
+    类似于序列位置的 RoPE，但作用于递归深度而非 token 位置。
+    没有此信号时，共享的递归块权重必须在无法区分当前循环迭代的情况下
+    同时处理早期模式匹配和后期精炼。添加循环索引使相同参数在每次
+    迭代中实现功能上不同的操作。
 
-    Args:
-        h        -- hidden state tensor of shape (B, T, dim)
-        loop_t   -- current loop iteration index (0-based)
-        loop_dim -- number of leading channels to receive the embedding (must be even)
-        theta    -- sinusoidal base frequency
+    参数:
+        h        -- 形状为 (B, T, dim) 的隐藏状态张量
+        loop_t   -- 当前循环迭代索引（从 0 开始）
+        loop_dim -- 接收嵌入的前导通道数（必须为偶数）
+        theta    -- 正弦基础频率
 
-    Returns:
-        h with a sinusoidal bias added to its first loop_dim channels; same shape
+    返回:
+        前 loop_dim 个通道添加了正弦偏置的 h；形状不变
     """
     freqs = 1.0 / (
         theta
@@ -571,47 +565,46 @@ def loop_index_embedding(
 
 
 # ---------------------------------------------------------------------------
-# Depth-wise LoRA adapter (per loop iteration)
+# 深度级 LoRA 适配器（每循环迭代）
 # ---------------------------------------------------------------------------
 
 
 class LoRAAdapter(nn.Module):
     """
-    Depth-wise LoRA adaptation for the recurrent block (Bae et al., 2024).
+    递归块的深度级 LoRA 适配（Bae et al., 2024）。
 
-    Pure weight-tying (identical weights every loop) limits expressiveness;
-    fully distinct weights per loop eliminate parameter savings. This adapter
-    sits in between: a shared low-rank down-projection and up-projection matrix B
-    are shared across all loops, while a small per-loop scale vector shifts the
-    effective transformation at each depth without adding significant parameters.
+    纯权重绑定（每次循环使用相同权重）限制了表达能力；
+    每次循环使用完全独立的权重则消除了参数节省。此适配器
+    介于两者之间：共享的低秩降维投影和升维矩阵 B 在所有循环间共享，
+    而小型的每循环缩放向量在每个深度调整有效变换，
+    不增加显著参数。
 
     delta(x, t) = (down(x) * scale[t]) @ B
     """
 
     def __init__(self, dim: int, rank: int, max_loops: int):
         """
-        Args:
-            dim       -- model hidden dimension (input and output size)
-            rank      -- low-rank bottleneck dimension
-            max_loops -- maximum number of loop iterations (determines embedding table size)
+        参数:
+            dim       -- 模型隐藏维度（输入和输出大小）
+            rank      -- 低秩瓶颈维度
+            max_loops -- 最大循环迭代次数（决定嵌入表大小）
         """
         super().__init__()
-        self.down = nn.Linear(dim, rank, bias=False)  # shared A: dim → rank
-        self.B = nn.Parameter(torch.randn(rank, dim) * 0.02)  # shared B: rank → dim
-        self.scale = nn.Embedding(max_loops, rank)  # per-loop element-wise scale
+        self.down = nn.Linear(dim, rank, bias=False)  # 共享 A: dim → rank
+        self.B = nn.Parameter(torch.randn(rank, dim) * 0.02)  # 共享 B: rank → dim
+        self.scale = nn.Embedding(max_loops, rank)  # 每循环的逐元素缩放
 
     def forward(self, x: torch.Tensor, loop_t: int) -> torch.Tensor:
         """
-        Args:
-            x      -- input tensor of shape (B, T, dim)
-            loop_t -- current loop index used to look up the per-loop scale
+        参数:
+            x      -- 形状为 (B, T, dim) 的输入张量
+            loop_t -- 当前循环索引，用于查找每循环缩放
 
-        Returns:
-            Delta tensor of shape (B, T, dim) to be added to the block output
+        返回:
+            形状为 (B, T, dim) 的增量张量，添加到块输出上
         """
-        # Clamp for depth extrapolation: at inference n_loops can exceed the
-        # training max_loop_iters. Iterations beyond the trained range reuse
-        # the last learned per-loop scale rather than indexing out of range.
+        # 深度外推的截断：推理时 n_loops 可能超过训练时的 max_loop_iters。
+        # 超出训练范围的迭代复用最后学习的每循环缩放，而非越界索引。
         max_t = self.scale.num_embeddings - 1
         t_idx = loop_t if loop_t <= max_t else max_t
         s = self.scale(torch.tensor(t_idx, device=x.device))  # (rank,)
@@ -620,28 +613,28 @@ class LoRAAdapter(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Single Transformer Block (shared across recurrent loops)
+# 单个 Transformer 块（在递归循环间共享）
 # ---------------------------------------------------------------------------
 
 
 class TransformerBlock(nn.Module):
     """
-    Standard pre-norm transformer block with swappable attention and optional MoE FFN.
+    标准预归一化 Transformer 块，支持可切换的注意力和可选的 MoE FFN。
 
-    Attention is selected by cfg.attn_type:
-        "gqa" → GQAttention  (Grouped Query Attention, fewer KV heads)
-        "mla" → MLAttention  (Multi-Latent Attention, compressed KV cache)
+    注意力由 cfg.attn_type 选择:
+        "gqa" → GQAttention  （分组查询注意力，更少的 KV 头）
+        "mla" → MLAttention  （多潜在注意力，压缩 KV 缓存）
 
-    FFN is selected by use_moe:
-        True  → MoEFFN  (fine-grained routed + shared experts; used in RecurrentBlock)
-        False → Expert  (dense SwiGLU FFN; used in Prelude and Coda)
+    FFN 由 use_moe 选择:
+        True  → MoEFFN  （细粒度路由 + 共享专家；用于 RecurrentBlock）
+        False → Expert  （密集 SwiGLU FFN；用于前奏和尾声）
     """
 
     def __init__(self, cfg: MythosConfig, use_moe: bool = False):
         """
-        Args:
-            cfg     -- MythosConfig; attn_type selects the attention class
-            use_moe -- if True, use MoEFFN; otherwise use a dense Expert FFN
+        参数:
+            cfg     -- MythosConfig；attn_type 选择注意力类
+            use_moe -- 为 True 时使用 MoEFFN；否则使用密集 Expert FFN
         """
         super().__init__()
         self.attn_norm = RMSNorm(cfg.dim)
@@ -659,15 +652,15 @@ class TransformerBlock(nn.Module):
         cache_key: str = "default",
     ) -> torch.Tensor:
         """
-        Args:
-            x         -- input of shape (B, T, dim)
-            freqs_cis -- precomputed RoPE frequencies
-            mask      -- additive causal mask or None
-            kv_cache  -- cache dict mutated in-place by the attention layer
-            cache_key -- key identifying this layer in the cache
+        参数:
+            x         -- 形状为 (B, T, dim) 的输入
+            freqs_cis -- 预计算的 RoPE 频率
+            mask      -- 加性因果掩码或 None
+            kv_cache  -- 注意力层原地修改的缓存字典
+            cache_key -- 在缓存中标识此层的键
 
-        Returns:
-            Output tensor of shape (B, T, dim)
+        返回:
+            形状为 (B, T, dim) 的输出张量
         """
         x = x + self.resid_drop(
             self.attn(self.attn_norm(x), freqs_cis, mask, kv_cache, cache_key)
@@ -677,139 +670,136 @@ class TransformerBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# LTI-stable injection parameters  (spectral radius < 1 by construction)
+# LTI 稳定注入参数（谱半径 < 1，由构造保证）
 # ---------------------------------------------------------------------------
 
 
 class LTIInjection(nn.Module):
     """
-    Stable input injection for the recurrent update rule (Parcae, Prairie et al., 2026).
+    递归更新规则的稳定输入注入（Parcae, Prairie et al., 2026）。
 
-    The recurrent hidden state evolves as:
+    递归隐藏状态按以下规则演化:
         h_{t+1} = A · h_t  +  B · e  +  Transformer(h_t, e)
 
-    where e is the encoded input injected at every loop step to prevent drift.
-    Without constraints, A can develop spectral radius ≥ 1, causing the hidden
-    state to explode across loop iterations and destabilize training.
+    其中 e 是在每个循环步骤注入的编码输入，防止漂移。
+    无约束时，A 可能发展出谱半径 ≥ 1，导致隐藏状态在循环迭代中
+    爆炸并使训练不稳定。
 
-    This class guarantees ρ(A) < 1 by construction via a ZOH discretization:
-        A_continuous = Diag(-exp(log_A))       always negative diagonal
-        A_discrete   = exp(Δt · A_continuous)  element-wise, values in (0, 1)
+    此类通过 ZOH 离散化从构造上保证 ρ(A) < 1:
+        A_continuous = Diag(-exp(log_A))       始终为负对角
+        A_discrete   = exp(Δt · A_continuous)  逐元素，值 ∈ (0, 1)
 
-    where log_A and log_dt are learned parameters and exp ensures positivity.
-    This makes looped model training robust to hyperparameter choices and stable
-    even at high learning rates.
+    其中 log_A 和 log_dt 是可学习参数，exp 确保正值。
+    这使循环模型训练对超参数选择鲁棒，即使在高学习率下也保持稳定。
     """
 
     def __init__(self, dim: int):
         """
-        Args:
-            dim -- hidden state dimension; one scalar per channel for A and B
+        参数:
+            dim -- 隐藏状态维度；A 和 B 每通道一个标量
         """
         super().__init__()
-        self.log_A = nn.Parameter(torch.zeros(dim))  # log of A_continuous magnitude
-        self.log_dt = nn.Parameter(torch.zeros(1))  # log of discretization step Δt
+        self.log_A = nn.Parameter(torch.zeros(dim))  # A_continuous 幅度的对数
+        self.log_dt = nn.Parameter(torch.zeros(1))  # 离散化步长 Δt 的对数
         self.B = nn.Parameter(torch.ones(dim) * 0.1)
 
     def get_A(self) -> torch.Tensor:
         """
-        Compute the discretized diagonal state matrix A_discrete.
+        计算离散化对角状态矩阵 A_discrete。
 
-        Returns:
-            1-D tensor of shape (dim,) with all values strictly in (0, 1),
-            guaranteeing ρ(A) < 1 regardless of learned parameter values.
+        返回:
+            形状为 (dim,) 的一维张量，所有值严格在 (0, 1) 内，
+            无论学习参数值如何都保证 ρ(A) < 1。
         """
-        # Compute in log space to avoid 0 * inf = NaN when log_dt → -∞, log_A → +∞.
+        # 在对数空间计算以避免 log_dt → -∞, log_A → +∞ 时 0 * inf = NaN。
         # dt * A_c = -exp(log_dt) * exp(log_A) = -exp(log_dt + log_A)
-        # Clamp keeps the product finite in float32 for any gradient step size.
+        # 截断确保乘积在 float32 中对任何梯度步长都有限。
         return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
 
     def forward(
         self, h: torch.Tensor, e: torch.Tensor, transformer_out: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute h_{t+1} = A·h_t + B·e + transformer_out.
+        计算 h_{t+1} = A·h_t + B·e + transformer_out。
 
-        Args:
-            h               -- current hidden state (B, T, dim)
-            e               -- encoded input from Prelude, frozen across loops (B, T, dim)
-            transformer_out -- output of the recurrent TransformerBlock at this step (B, T, dim)
+        参数:
+            h               -- 当前隐藏状态 (B, T, dim)
+            e               -- 来自前奏的编码输入，跨循环冻结 (B, T, dim)
+            transformer_out -- 此步骤递归 TransformerBlock 的输出 (B, T, dim)
 
-        Returns:
-            Updated hidden state of shape (B, T, dim)
+        返回:
+            形状为 (B, T, dim) 的更新后隐藏状态
         """
         A = self.get_A()
         return A * h + self.B * e + transformer_out
 
 
 # ---------------------------------------------------------------------------
-# ACT halting (Adaptive Computation Time)
+# ACT 停止（自适应计算时间）
 # ---------------------------------------------------------------------------
 
 
 class ACTHalting(nn.Module):
     """
-    Adaptive Computation Time halting mechanism (Graves, 2016).
+    自适应计算时间停止机制（Graves, 2016）。
 
-    Learns a per-position halting probability at each loop iteration. Positions
-    where the hidden state has converged (high cumulative halting probability)
-    stop accumulating updates, while positions still being refined continue.
-    This lets easy tokens halt early and hard tokens receive more computation,
-    all within the same batch. Also makes the model Turing-complete under
-    certain assumptions about the expressiveness of the transformer block.
+    在每个循环迭代中学习每位置的停止概率。隐藏状态已收敛的位置
+    （高累积停止概率）停止累积更新，而仍在精炼的位置继续。
+    这使简单 token 提前停止，困难 token 获得更多计算，
+    全部在同一批次内完成。在关于 Transformer 块表达能力的
+    某些假设下，还使模型具有图灵完备性。
     """
 
     def __init__(self, dim: int):
         """
-        Args:
-            dim -- hidden state dimension; input to the halting scalar predictor
+        参数:
+            dim -- 隐藏状态维度；停止标量预测器的输入
         """
         super().__init__()
         self.halt = nn.Linear(dim, 1)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         """
-        Predict per-position halting probability from the current hidden state.
+        从当前隐藏状态预测每位置的停止概率。
 
-        Args:
-            h -- hidden state of shape (B, T, dim)
+        参数:
+            h -- 形状为 (B, T, dim) 的隐藏状态
 
-        Returns:
-            Halting probability tensor of shape (B, T), values in (0, 1)
+        返回:
+            形状为 (B, T) 的停止概率张量，值在 (0, 1) 内
         """
         return torch.sigmoid(self.halt(h)).squeeze(-1)
 
 
 # ---------------------------------------------------------------------------
-# Recurrent Block (one set of weights, looped T times)
+# 递归块（一组权重，循环 T 次）
 # ---------------------------------------------------------------------------
 
 
 class RecurrentBlock(nn.Module):
     """
-    The core recurrent block of OpenMythos — a single TransformerBlock looped T times.
+    OpenMythos 的核心递归块 — 单个 TransformerBlock 循环 T 次。
 
-    At each loop iteration t, the hidden state h is updated via:
-        1. loop_index_embedding: inject sinusoidal loop-index signal into h
-        2. TransformerBlock:     compute attention + MoE FFN on normalized (h + e)
-        3. LoRAAdapter:          apply depth-wise LoRA delta to transformer output
-        4. LTIInjection:         stable update h = A·h + B·e + transformer_out
-        5. ACTHalting:           accumulate per-position halting probabilities;
-                                  positions that have converged stop contributing
+    在每个循环迭代 t 中，隐藏状态 h 通过以下步骤更新:
+        1. loop_index_embedding: 将正弦循环索引信号注入 h
+        2. TransformerBlock:     在归一化的 (h + e) 上计算注意力 + MoE FFN
+        3. LoRAAdapter:          对 Transformer 输出应用深度级 LoRA 增量
+        4. LTIInjection:         稳定更新 h = A·h + B·e + transformer_out
+        5. ACTHalting:           累积每位置停止概率；
+                                  已收敛的位置停止贡献
 
-    The encoded input e (output of the Prelude) is injected at every step to keep
-    the original input signal alive across arbitrary loop depth, preventing drift.
-    The ACT mechanism produces a weighted sum of hidden states across iterations,
-    where the weights reflect when each position converged.
+    编码输入 e（前奏的输出）在每步注入，以在任意循环深度下保持
+    原始输入信号存活，防止漂移。ACT 机制产生跨迭代的隐藏状态加权和，
+    权重反映每个位置何时收敛。
 
-    More loop iterations at inference = deeper reasoning chains, following the
-    depth-extrapolation property of looped transformers (Saunshi et al., 2025).
+    推理时更多循环迭代 = 更深的推理链，遵循循环 Transformer 的
+    深度外推特性（Saunshi et al., 2025）。
     """
 
     def __init__(self, cfg: MythosConfig):
         """
-        Args:
-            cfg -- MythosConfig; uses dim, lora_rank, max_loop_iters, act_threshold
+        参数:
+            cfg -- MythosConfig；使用 dim、lora_rank、max_loop_iters、act_threshold
         """
         super().__init__()
         self.cfg = cfg
@@ -820,7 +810,7 @@ class RecurrentBlock(nn.Module):
         self.norm = RMSNorm(cfg.dim)
         self.loop_dim = (
             cfg.dim // 8
-        )  # fraction of channels receiving loop-index embedding
+        )  # 接收循环索引嵌入的通道比例
 
     def forward(
         self,
@@ -832,20 +822,20 @@ class RecurrentBlock(nn.Module):
         kv_cache: Optional[dict] = None,
     ) -> torch.Tensor:
         """
-        Run the recurrent loop for up to n_loops iterations with ACT early exit.
+        运行递归循环，最多 n_loops 次迭代，支持 ACT 提前退出。
 
-        Args:
-            h        -- initial hidden state from the Prelude, shape (B, T, dim)
-            e        -- encoded input frozen for injection each step, shape (B, T, dim)
-            freqs_cis-- precomputed RoPE frequencies
-            mask     -- additive causal mask or None
-            n_loops  -- number of loop iterations; defaults to cfg.max_loop_iters.
-                        Can be increased at inference for deeper reasoning (depth extrapolation).
-            kv_cache -- cache dict passed through to the inner TransformerBlock;
-                        each loop iteration uses a separate cache key
+        参数:
+            h        -- 来自前奏的初始隐藏状态，形状 (B, T, dim)
+            e        -- 每步注入的冻结编码输入，形状 (B, T, dim)
+            freqs_cis-- 预计算的 RoPE 频率
+            mask     -- 加性因果掩码或 None
+            n_loops  -- 循环迭代次数；默认为 cfg.max_loop_iters。
+                        推理时可增大以获得更深推理（深度外推）。
+            kv_cache -- 传递给内部 TransformerBlock 的缓存字典；
+                        每次循环迭代使用单独的缓存键
 
-        Returns:
-            ACT-weighted sum of hidden states across iterations, shape (B, T, dim)
+        返回:
+            跨迭代的 ACT 加权隐藏状态和，形状 (B, T, dim)
         """
         n_loops = n_loops or self.cfg.max_loop_iters
         B, T, D = h.shape
@@ -865,11 +855,11 @@ class RecurrentBlock(nn.Module):
             p = self.act(h)  # (B, T)
             still_running = ~halted
 
-            # ACT remainder trick: once cumulative_p + p crosses threshold,
-            # assign the remaining probability mass as the final weight.
-            # Gate by still_running so halted positions contribute exactly
-            # once (on the halting step) and zero thereafter — otherwise
-            # threshold<1 leaves a non-zero remainder that leaks every step.
+            # ACT 余量技巧：一旦 cumulative_p + p 超过阈值，
+            # 将剩余概率质量分配为最终权重。
+            # 通过 still_running 门控，使已停止的位置仅贡献一次
+            # （在停止步骤），之后为零——否则 threshold<1 会留下
+            # 非零余量在每步泄漏。
             remainder = (1.0 - cumulative_p).clamp(min=0)
             weight = torch.where(
                 cumulative_p + p >= self.cfg.act_threshold,
@@ -882,9 +872,9 @@ class RecurrentBlock(nn.Module):
             cumulative_p = cumulative_p + p * still_running.float()
             halted = halted | (cumulative_p >= self.cfg.act_threshold)
 
-            # Only short-circuit when there is no KV cache to keep consistent.
-            # With a cache, every loop depth must run on every forward pass so
-            # later decode steps find populated keys at every cache_key.
+            # 仅在没有 KV 缓存需要保持一致时才短路退出。
+            # 有缓存时，每次前向传播必须运行所有循环深度，
+            # 以确保后续解码步骤在每个 cache_key 都能找到已填充的键。
             if halted.all() and kv_cache is None:
                 break
 
@@ -892,48 +882,48 @@ class RecurrentBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Full Model
+# 完整模型
 # ---------------------------------------------------------------------------
 
 
 class OpenMythos(nn.Module):
     """
-    OpenMythos — Recurrent-Depth Transformer language model.
+    OpenMythos — 递归深度 Transformer 语言模型。
 
-    Implements the hypothesized Claude Mythos architecture as a Recurrent-Depth
-    Transformer (RDT). The model divides computation into three functional blocks:
+    将假设的 Claude Mythos 架构实现为递归深度 Transformer（RDT）。
+    模型将计算分为三个功能块:
 
-        Input tokens
+        输入 token
              ↓
-        [Prelude]          — prelude_layers standard transformer blocks, run once
+        [前奏]             — prelude_layers 个标准 Transformer 块，运行一次
              ↓
-        [Recurrent Block]  — one transformer block looped T times with input injection
+        [递归块]           — 一个 Transformer 块循环 T 次，带输入注入
              ↑_______↓      h_{t+1} = A·h_t + B·e + Transformer(h_t, e)
              ↓
-        [Coda]             — coda_layers standard transformer blocks, run once
+        [尾声]             — coda_layers 个标准 Transformer 块，运行一次
              ↓
-        Output logits
+        输出 logits
 
-    Key properties:
-    - Same weights, more loops → deeper reasoning, no parameter growth
-    - Depth extrapolation: train on N loops, test on N+k loops (emergent)
-    - ACT halting: variable compute per position within a batch
-    - MoE FFN in the recurrent block: breadth across domains
-    - LTI-stable injection: spectral radius < 1 guaranteed by construction
-    - Supports both GQA and MLA attention (set via cfg.attn_type)
+    关键特性:
+    - 相同权重，更多循环 → 更深推理，无参数增长
+    - 深度外推：在 N 次循环上训练，在 N+k 次循环上测试（涌现特性）
+    - ACT 停止：批次内每位置可变计算量
+    - 递归块中的 MoE FFN：跨领域广度
+    - LTI 稳定注入：谱半径 < 1 由构造保证
+    - 支持 GQA 和 MLA 两种注意力（通过 cfg.attn_type 设置）
     """
 
     def __init__(self, cfg: MythosConfig):
         """
-        Args:
-            cfg -- MythosConfig specifying all architecture hyperparameters
+        参数:
+            cfg -- 指定所有架构超参数的 MythosConfig
         """
         super().__init__()
         self.cfg = cfg
 
         self.embed = nn.Embedding(cfg.vocab_size, cfg.dim)
 
-        # GQA uses full head_dim for RoPE; MLA uses only qk_rope_head_dim (decoupled)
+        # GQA 使用完整 head_dim 进行 RoPE；MLA 仅使用 qk_rope_head_dim（解耦）
         freqs = precompute_rope_freqs(
             cfg.dim // cfg.n_heads, cfg.max_seq_len, cfg.rope_theta
         )
@@ -953,12 +943,12 @@ class OpenMythos(nn.Module):
 
         self.norm = RMSNorm(cfg.dim)
         self.head = nn.Linear(cfg.dim, cfg.vocab_size, bias=False)
-        self.head.weight = self.embed.weight  # weight tying
+        self.head.weight = self.embed.weight  # 权重绑定
 
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Initialize all linear and embedding weights with N(0, 0.02)."""
+        """使用 N(0, 0.02) 初始化所有线性层和嵌入层权重。"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.02)
@@ -970,19 +960,18 @@ class OpenMythos(nn.Module):
         seq_len: int, device: torch.device, dtype: torch.dtype
     ) -> torch.Tensor:
         """
-        Build an additive causal mask: 0 on and below the diagonal, -inf above.
+        构建加性因果掩码：对角线及以下为 0，以上为 -inf。
 
-        Args:
-            seq_len -- sequence length
-            device  -- target device
-            dtype   -- tensor dtype (must match activation dtype so the additive
-                       mask doesn't upcast the attention logits in the fallback
-                       attention path — e.g. bf16 weights with an fp32 mask
-                       promotes attn to fp32 and then breaks the fp32-vs-bf16
-                       matmul against V)
+        参数:
+            seq_len -- 序列长度
+            device  -- 目标设备
+            dtype   -- 张量数据类型（必须与激活数据类型匹配，以免加性掩码
+                       在回退注意力路径中提升注意力 logits 的精度——例如
+                       bf16 权重配合 fp32 掩码会将注意力提升为 fp32，
+                       然后与 V 的 fp32-vs-bf16 矩阵乘法冲突）
 
-        Returns:
-            Tensor of shape (1, 1, seq_len, seq_len) broadcastable over (B, H, T, S)
+        返回:
+            形状为 (1, 1, seq_len, seq_len) 的张量，可广播到 (B, H, T, S)
         """
         mask = torch.full(
             (1, 1, seq_len, seq_len), float("-inf"), device=device, dtype=dtype
@@ -997,21 +986,20 @@ class OpenMythos(nn.Module):
         start_pos: int = 0,
     ) -> torch.Tensor:
         """
-        Forward pass through Prelude → Recurrent Block → Coda.
+        通过 前奏 → 递归块 → 尾声 的前向传播。
 
-        Args:
-            input_ids -- token indices of shape (B, T)
-            n_loops   -- recurrent loop depth; defaults to cfg.max_loop_iters.
-                         Increase at inference to extrapolate to harder problems.
-            kv_cache  -- dict mutated in-place for autoregressive KV caching;
-                         pass an empty dict {} and reuse across decode steps
-            start_pos -- index of the first token in input_ids within the full
-                         sequence; used to select the correct RoPE frequencies
-                         during incremental decoding (0 for prefill, prompt_len
-                         for each subsequent decode step)
+        参数:
+            input_ids -- 形状为 (B, T) 的 token 索引
+            n_loops   -- 递归循环深度；默认为 cfg.max_loop_iters。
+                         推理时增大可外推到更难的问题。
+            kv_cache  -- 原地修改的自回归 KV 缓存字典；
+                         传入空字典 {} 并在各解码步骤间复用
+            start_pos -- input_ids 中第一个 token 在完整序列中的索引；
+                         用于在增量解码时选择正确的 RoPE 频率
+                         （预填充时为 0，后续每个解码步骤为 prompt_len）
 
-        Returns:
-            Logits of shape (B, T, vocab_size)
+        返回:
+            形状为 (B, T, vocab_size) 的 logits
         """
         T = input_ids.shape[1]
         device = input_ids.device
@@ -1025,7 +1013,7 @@ class OpenMythos(nn.Module):
         for i, layer in enumerate(self.prelude):
             x = layer(x, freqs_cis, mask, kv_cache, cache_key=f"prelude_{i}")
 
-        e = x  # encoded input frozen for injection every loop
+        e = x  # 编码输入，冻结后在每次循环中注入
         x = self.recurrent(x, e, freqs_cis, mask, n_loops, kv_cache)
 
         for i, layer in enumerate(self.coda):
@@ -1043,25 +1031,24 @@ class OpenMythos(nn.Module):
         top_k: int = 50,
     ) -> torch.Tensor:
         """
-        Autoregressive token generation with KV caching.
+        带 KV 缓存的自回归 token 生成。
 
-        On step 0 the full prompt is processed. On subsequent steps only the
-        last generated token is passed, with all previous keys and values
-        retrieved from kv_cache. This keeps decode cost proportional to one
-        token per step rather than the full growing sequence.
+        步骤 0 处理完整提示。后续步骤仅传入最后生成的 token，
+        所有先前的键和值从 kv_cache 中检索。这使解码成本与每步
+        单个 token 成正比，而非与不断增长的完整序列成正比。
 
-        n_loops can be set higher than the training value to extrapolate to
-        harder problems at inference time (depth extrapolation property).
+        n_loops 可设置为高于训练值，以在推理时外推到更难的问题
+        （深度外推特性）。
 
-        Args:
-            input_ids      -- prompt token indices of shape (B, T)
-            max_new_tokens -- number of tokens to generate
-            n_loops        -- recurrent loop depth for each decode step
-            temperature    -- softmax temperature; lower = more greedy
-            top_k          -- restrict sampling to top-K logits (0 = disabled)
+        参数:
+            input_ids      -- 形状为 (B, T) 的提示 token 索引
+            max_new_tokens -- 要生成的 token 数量
+            n_loops        -- 每个解码步骤的递归循环深度
+            temperature    -- softmax 温度；越低越贪婪
+            top_k          -- 将采样限制在 Top-K logits（0 = 禁用）
 
-        Returns:
-            Token indices of shape (B, T + max_new_tokens)
+        返回:
+            形状为 (B, T + max_new_tokens) 的 token 索引
         """
         kv_cache: dict = {}
         prompt_len = input_ids.shape[1]

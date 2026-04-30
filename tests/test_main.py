@@ -644,4 +644,35 @@ class TestAttnTypeSwap:
         cfg_gqa = gqa_cfg()
         cfg_mla = mla_cfg()
         ids = torch.randint(0, cfg_gqa.vocab_size, (B, T))
-        logits_gqa = OpenMythos
+        logits_gqa = OpenMythos(cfg_gqa)(ids)
+        logits_mla = OpenMythos(cfg_mla)(ids)
+        # different architectures, different params → outputs must differ
+        assert not torch.allclose(logits_gqa, logits_mla)
+
+    def test_both_modes_produce_valid_shapes(self):
+        ids = torch.randint(0, 200, (B, T))
+        for attn_type in ("gqa", "mla"):
+            cfg = gqa_cfg(attn_type=attn_type)
+            logits = OpenMythos(cfg)(ids)
+            assert logits.shape == (B, T, cfg.vocab_size)
+
+    def test_mla_fewer_kv_cache_bytes(self):
+        # MLA cache should be smaller than GQA cache for the same sequence
+        ids = torch.randint(0, 200, (1, T))
+        cache_gqa, cache_mla = {}, {}
+        with torch.no_grad():
+            OpenMythos(gqa_cfg())(ids, kv_cache=cache_gqa)
+            OpenMythos(mla_cfg())(ids, kv_cache=cache_mla)
+
+        def cache_bytes(cache):
+            return sum(
+                t.numel() * t.element_size()
+                for entry in cache.values()
+                for t in entry.values()
+            )
+
+        assert cache_bytes(cache_mla) < cache_bytes(cache_gqa)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "--verbose"])
